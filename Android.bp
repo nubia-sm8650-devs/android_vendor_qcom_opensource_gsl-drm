@@ -1,0 +1,27 @@
+//
+// SPDX-FileCopyrightText: The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+soong_namespace {
+}
+
+cc_library_shared {
+    name: "libgsl.upstream",
+    stem: "libgsl",
+    device_specific: true,
+    srcs: ["src/*.c"],
+    local_include_dirs: ["include"],
+    shared_libs: [
+        "libcutils",
+        "libdl",
+        "liblog",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+    version_script: "libgsl.map",
+}
