@@ -21,6 +21,10 @@
 
 #define GSL_GUILTY_CONTEXT_RESET 0x8253
 
+#define GSL_WORKER_POLL_MS 100
+#define GSL_WORKER_DRAIN_MS 5000
+#define GSL_DESTROY_WAIT_MS 20000
+
 struct gsl_ibdesc {
     uint64_t gpuaddr;
     uint64_t hostptr;
@@ -319,7 +323,11 @@ gsl_ctxid_t gsl_context_create(gsl_devhandle_t handle, uint32_t type, uint32_t f
 }
 
 int gsl_context_destroy(gsl_devhandle_t handle, gsl_ctxid_t id) {
+    struct gsl_device* dev = gsl_device_get(handle);
     struct gsl_context **link, *ctx = NULL;
+    struct gsl_sync_point point;
+
+    if (!dev) return GSL_FAILURE_BADPARAM;
 
     pthread_mutex_lock(&gsl_ctx_lock);
     for (link = &gsl_contexts; *link; link = &(*link)->next) {
@@ -332,6 +340,18 @@ int gsl_context_destroy(gsl_devhandle_t handle, gsl_ctxid_t id) {
     pthread_mutex_unlock(&gsl_ctx_lock);
 
     if (!ctx) return GSL_FAILURE_BADPARAM;
+
+    gsl_context_stop_worker(ctx);
+
+    pthread_mutex_lock(&ctx->lock);
+    point.tl = ctx->tl;
+    point.point = ctx->submitted ? ctx->last_point : 0;
+    pthread_mutex_unlock(&ctx->lock);
+
+    struct gsl_syncobj obj = {.count = 1, .points = &point, .fd = -1};
+
+    if (gsl_syncobj_wait_internal(dev, &obj, GSL_DESTROY_WAIT_MS))
+        GSL_ERR("Failed waiting for pending submits to ctxt %u. destroying context anyway.", id);
 
     gsl_context_put(ctx);
 
@@ -447,6 +467,29 @@ out:
     return ret;
 }
 
+static void gsl_submit_job_signal(struct gsl_device* dev, const struct gsl_submit_job* job) {
+    uint32_t* handles = calloc(job->nout, sizeof(*handles));
+    uint64_t* points = calloc(job->nout, sizeof(*points));
+
+    if (handles && points) {
+        for (uint32_t i = 0; i < job->nout; i++) {
+            handles[i] = job->out[i].handle;
+            points[i] = job->out[i].point;
+        }
+
+        struct drm_syncobj_timeline_array req = {
+                .handles = (uintptr_t)handles,
+                .points = (uintptr_t)points,
+                .count_handles = job->nout,
+        };
+
+        gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &req);
+    }
+
+    free(handles);
+    free(points);
+}
+
 static void* gsl_context_worker(void* data) {
     struct gsl_context* ctx = data;
     struct gsl_device* dev = gsl_device_default();
@@ -454,18 +497,34 @@ static void* gsl_context_worker(void* data) {
     pthread_mutex_lock(&ctx->qlock);
     for (;;) {
         struct gsl_submit_job* job;
-        uint64_t timeout;
+        uint64_t deadline = 0;
         int ret;
 
         while (!ctx->jobs && !ctx->stop) pthread_cond_wait(&ctx->qcond, &ctx->qlock);
         job = ctx->jobs;
         if (!job) break;
-
-        timeout = ctx->stop ? gsl_abs_timeout_ns(5000) : INT64_MAX;
         pthread_mutex_unlock(&ctx->qlock);
 
-        ret = gsl_submit_job_run(dev, ctx, job, timeout);
-        if (ret) GSL_ERR("dropping deferred submit ts %u on ctx %u: %d", job->ts, ctx->id, ret);
+        for (;;) {
+            bool stop;
+
+            ret = gsl_submit_job_run(dev, ctx, job, gsl_abs_timeout_ns(GSL_WORKER_POLL_MS));
+            if (ret != GSL_FAILURE_TIMEOUT) break;
+
+            pthread_mutex_lock(&ctx->qlock);
+            stop = ctx->stop;
+            pthread_mutex_unlock(&ctx->qlock);
+            if (!stop) continue;
+
+            if (!deadline)
+                deadline = gsl_abs_timeout_ns(GSL_WORKER_DRAIN_MS);
+            else if (gsl_abs_timeout_ns(0) >= deadline)
+                break;
+        }
+        if (ret) {
+            GSL_ERR("dropping deferred submit ts %u on ctx %u: %d", job->ts, ctx->id, ret);
+            gsl_submit_job_signal(dev, job);
+        }
 
         pthread_mutex_lock(&ctx->qlock);
         ctx->jobs = job->next;
@@ -501,12 +560,18 @@ static int gsl_context_defer(struct gsl_context* ctx, struct gsl_submit_job* job
 }
 
 static void gsl_context_stop_worker(struct gsl_context* ctx) {
+    pthread_t worker;
+    bool has_worker;
+
     pthread_mutex_lock(&ctx->qlock);
     ctx->stop = true;
     pthread_cond_signal(&ctx->qcond);
+    has_worker = ctx->has_worker;
+    worker = ctx->worker;
+    ctx->has_worker = false;
     pthread_mutex_unlock(&ctx->qlock);
 
-    if (ctx->has_worker) pthread_join(ctx->worker, NULL);
+    if (has_worker) pthread_join(worker, NULL);
 }
 
 static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
