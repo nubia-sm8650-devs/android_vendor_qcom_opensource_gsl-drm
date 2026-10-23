@@ -843,10 +843,10 @@ int gsl_command_issueib_with_alloc_list(gsl_devhandle_t handle, gsl_ctxid_t id,
                                         const struct gsl_cmdobj* cmds, uint32_t ncmds,
                                         const struct gsl_cmdobj* allocs, uint32_t nallocs,
                                         uint32_t* ts, uint32_t flags, struct gsl_syncobj* wait,
-                                        const struct gsl_timeline_signal* signal) {
+                                        void* extra) {
     if (!ncmds) return GSL_FAILURE_BADPARAM;
 
-    return gsl_issue_cmdobjs(handle, id, cmds, ncmds, ts, wait, signal);
+    return gsl_issue_cmdobjs(handle, id, cmds, ncmds, ts, wait, NULL);
 }
 
 static int gsl_issue_ibdescs(gsl_devhandle_t handle, gsl_ctxid_t id, const struct gsl_ibdesc* ibs,
