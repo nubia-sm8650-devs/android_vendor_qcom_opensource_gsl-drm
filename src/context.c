@@ -165,7 +165,20 @@ static void gsl_retire_points_put(struct gsl_device* dev, struct gsl_bo* bo) {
     bo->nretire = 0;
 }
 
-void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo) {
+static int gsl_retire_points_add(struct gsl_bo* bo, const struct gsl_sync_point* point) {
+    struct gsl_sync_point* grown = realloc(bo->retire, (bo->nretire + 1) * sizeof(*grown));
+
+    if (!grown) return GSL_FAILURE_OUTOFMEM;
+
+    grown[bo->nretire].tl = gsl_tl_get(point->tl);
+    grown[bo->nretire].point = point->point;
+    bo->retire = grown;
+    bo->nretire++;
+
+    return GSL_SUCCESS;
+}
+
+void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo, const struct gsl_sync_point* after) {
     struct gsl_deferred* node;
 
     if (!gsl_device_owns(dev, bo->gen)) {
@@ -176,7 +189,19 @@ void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo) {
 
     gsl_reap_deferred(dev);
 
-    if (!bo->va_size || gsl_context_snapshot(&bo->retire, &bo->nretire) || !bo->nretire) {
+    if (!bo->va_size || gsl_context_snapshot(&bo->retire, &bo->nretire)) {
+        gsl_retire_points_put(dev, bo);
+        gsl_bo_destroy(dev, bo);
+        return;
+    }
+
+    if (after && after->point && gsl_retire_points_add(bo, after)) {
+        struct gsl_syncobj obj = {.count = 1, .points = (struct gsl_sync_point*)after, .fd = -1};
+
+        gsl_syncobj_wait_internal(dev, &obj, GSL_TIMEOUT_INFINITE);
+    }
+
+    if (!bo->nretire) {
         gsl_retire_points_put(dev, bo);
         gsl_bo_destroy(dev, bo);
         return;
@@ -952,7 +977,18 @@ int gsl_command_insertfence(gsl_devhandle_t handle, gsl_ctxid_t id, struct gsl_s
 
 int gsl_command_freememontimestamp_pure(gsl_devhandle_t handle, gsl_ctxid_t id,
                                         struct gsl_memdesc* memdesc, uint32_t ts, uint32_t type) {
-    return gsl_memory_free_pure(memdesc);
+    struct gsl_context* ctx = gsl_context_get(id);
+    struct gsl_sync_point point;
+    int ret;
+
+    if (!ctx) return gsl_memory_free_pure(memdesc);
+
+    point.tl = ctx->tl;
+    point.point = gsl_context_ts_point(ctx, ts);
+    ret = gsl_memory_free_after(memdesc, &point);
+
+    gsl_context_put(ctx);
+    return ret;
 }
 
 int gsl_command_resetstatus(gsl_devhandle_t handle, uint32_t* status) {

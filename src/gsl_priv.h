@@ -187,7 +187,7 @@ int gsl_context_marker(gsl_devhandle_t handle, gsl_ctxid_t id, uint32_t* ts,
                        struct gsl_syncobj* wait, const struct gsl_timeline_signal* signal);
 void gsl_context_put(struct gsl_context* ctx);
 int gsl_context_snapshot(struct gsl_sync_point** points, uint32_t* count);
-void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo);
+void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo, const struct gsl_sync_point* after);
 void gsl_bo_destroy(struct gsl_device* dev, struct gsl_bo* bo);
 void gsl_bo_forget(struct gsl_bo* bo);
 void gsl_reap_deferred(struct gsl_device* dev);
@@ -196,3 +196,4 @@ void gsl_contexts_reset(bool forked);
 void gsl_deferred_reset(void);
 void gsl_imports_reset(void);
 int gsl_memory_free_pure(struct gsl_memdesc* memdesc);
+int gsl_memory_free_after(struct gsl_memdesc* memdesc, const struct gsl_sync_point* after);

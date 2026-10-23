@@ -281,7 +281,8 @@ int gsl_memory_alloc_pure(uint32_t size, uint32_t flags, struct gsl_memdesc* mem
     return gsl_memory_alloc_pure_64(size, flags, memdesc);
 }
 
-static void gsl_bo_put(struct gsl_device* dev, struct gsl_bo* bo) {
+static void gsl_bo_put(struct gsl_device* dev, struct gsl_bo* bo,
+                       const struct gsl_sync_point* after) {
     if (bo->type == GSL_BO_IMPORT) {
         struct gsl_bo** link;
 
@@ -299,10 +300,10 @@ static void gsl_bo_put(struct gsl_device* dev, struct gsl_bo* bo) {
         pthread_mutex_unlock(&gsl_import_lock);
     }
 
-    gsl_bo_release(dev, bo);
+    gsl_bo_release(dev, bo, after);
 }
 
-int gsl_memory_free_pure(struct gsl_memdesc* memdesc) {
+int gsl_memory_free_after(struct gsl_memdesc* memdesc, const struct gsl_sync_point* after) {
     struct gsl_device* dev = gsl_device_default();
     struct gsl_bo* bo;
 
@@ -315,10 +316,14 @@ int gsl_memory_free_pure(struct gsl_memdesc* memdesc) {
     if (bo->type == GSL_BO_IMPORT && memdesc->hostptr)
         munmap(memdesc->hostptr, gsl_page_align(memdesc->size));
 
-    gsl_bo_put(dev, bo);
+    gsl_bo_put(dev, bo, after);
     gsl_memdesc_clear(memdesc);
 
     return GSL_SUCCESS;
+}
+
+int gsl_memory_free_pure(struct gsl_memdesc* memdesc) {
+    return gsl_memory_free_after(memdesc, NULL);
 }
 
 int gsl_memory_import(uint64_t handle, uint64_t flags, struct gsl_memdesc* memdesc) {
