@@ -124,7 +124,10 @@ int gsl_syncobj_merge_multiple(struct gsl_syncobj** out, struct gsl_syncobj** ob
     *out = NULL;
 
     for (uint64_t i = 0; i < count; i++) {
-        if (!objs[i]) continue;
+        if (!objs[i]) {
+            gsl_syncobj_put(merged);
+            return GSL_FAILURE_BADPARAM;
+        }
 
         ret = gsl_syncobj_merge_into(&merged, objs[i]);
         if (ret) {
@@ -132,8 +135,6 @@ int gsl_syncobj_merge_multiple(struct gsl_syncobj** out, struct gsl_syncobj** ob
             return ret;
         }
     }
-    if (!merged) return GSL_FAILURE_BADPARAM;
-
     *out = merged;
 
     return GSL_SUCCESS;
