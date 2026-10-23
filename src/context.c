@@ -460,7 +460,8 @@ struct gsl_submit_job {
     struct drm_msm_gem_submit_cmd* cmds;
     uint32_t ncmds;
     uint32_t ts;
-    uint64_t bind_point;
+    struct drm_msm_vm_bind_op* ops;
+    uint32_t nops;
     struct gsl_syncobj* wait;
     struct gsl_syncobj* pending;
     struct drm_msm_syncobj* out;
@@ -476,6 +477,7 @@ static void gsl_submit_job_free(struct gsl_device* dev, struct gsl_submit_job* j
     free(job->out_tls);
     free(job->out);
     free(job->cmds);
+    free(job->ops);
     free(job);
 }
 
@@ -516,13 +518,25 @@ static int gsl_deps_wait_available(struct gsl_device* dev, const struct gsl_sync
 static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
                               struct gsl_submit_job* job, uint64_t timeout_abs_ns) {
     struct gsl_sync_deps deps = {0};
+    uint64_t bind_point = 0;
     int ret = GSL_SUCCESS;
 
-    if (job->bind_point) ret = gsl_sync_deps_add_point(&deps, dev->bind_syncobj, job->bind_point);
+    if (!job->ops) {
+        pthread_mutex_lock(&dev->bind_lock);
+        bind_point = dev->bind_point;
+        pthread_mutex_unlock(&dev->bind_lock);
+    }
+
+    if (bind_point) ret = gsl_sync_deps_add_point(&deps, dev->bind_syncobj, bind_point);
     if (!ret) ret = gsl_sync_deps_add(dev, &deps, job->wait);
     if (!ret) ret = gsl_sync_deps_add(dev, &deps, job->pending);
     if (!ret) ret = gsl_deps_wait_available(dev, &deps, timeout_abs_ns);
     if (ret) goto out;
+
+    if (job->ops) {
+        ret = gsl_bind_ops(dev, job->ops, job->nops, deps.in, deps.count);
+        goto out;
+    }
 
     struct drm_msm_gem_submit req = {
             .flags = MSM_PIPE_3D0 | MSM_SUBMIT_NO_IMPLICIT | MSM_SUBMIT_SYNCOBJ_OUT |
@@ -656,13 +670,70 @@ static void gsl_context_stop_worker(struct gsl_context* ctx) {
     if (has_worker) pthread_join(worker, NULL);
 }
 
+static int gsl_context_queue(struct gsl_device* dev, struct gsl_context* ctx,
+                             struct gsl_submit_job** job) {
+    bool queued;
+    int ret;
+
+    pthread_mutex_lock(&ctx->qlock);
+    queued = ctx->jobs != NULL;
+    pthread_mutex_unlock(&ctx->qlock);
+
+    ret = queued ? GSL_FAILURE_TIMEOUT : gsl_submit_job_run(dev, ctx, *job, 0);
+    if (ret == GSL_FAILURE_TIMEOUT) {
+        ret = gsl_context_defer(ctx, *job);
+        if (!ret) *job = NULL;
+    }
+
+    return ret;
+}
+
+int gsl_context_bind(struct gsl_device* dev, gsl_ctxid_t id, const struct drm_msm_vm_bind_op* ops,
+                     uint32_t count, struct gsl_syncobj* wait) {
+    struct gsl_submit_job* job;
+    struct gsl_context* ctx;
+    int ret;
+
+    if (!count) return GSL_SUCCESS;
+
+    ctx = gsl_context_get(id);
+    if (!ctx) {
+        struct gsl_sync_deps deps = {0};
+
+        ret = gsl_sync_deps_add(dev, &deps, wait);
+        if (!ret) ret = gsl_bind_ops(dev, ops, count, deps.in, deps.count);
+        gsl_sync_deps_fini(dev, &deps);
+
+        return ret;
+    }
+
+    job = calloc(1, sizeof(*job));
+    if (job) job->ops = malloc(count * sizeof(*ops));
+    if (!job || !job->ops) {
+        free(job);
+        gsl_context_put(ctx);
+        return GSL_FAILURE_OUTOFMEM;
+    }
+    memcpy(job->ops, ops, count * sizeof(*ops));
+    job->nops = count;
+    if (wait) job->wait = gsl_syncobj_get(wait);
+
+    pthread_mutex_lock(&ctx->lock);
+    ret = gsl_context_queue(dev, ctx, &job);
+    pthread_mutex_unlock(&ctx->lock);
+
+    if (job) gsl_submit_job_free(dev, job);
+    gsl_context_put(ctx);
+
+    return ret;
+}
+
 static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
                               struct drm_msm_gem_submit_cmd* cmds, uint32_t ncmds, uint32_t* ts,
                               struct gsl_syncobj* wait, const struct gsl_timeline_signal* signal) {
     struct gsl_submit_job* job;
     uint32_t next, count;
     uint64_t point;
-    bool queued;
     int ret;
 
     gsl_reap_deferred(dev);
@@ -694,10 +765,6 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
     job->ts = next;
     point = ctx->submitted ? gsl_context_point(ctx, next) : 1;
 
-    pthread_mutex_lock(&dev->bind_lock);
-    job->bind_point = dev->bind_point;
-    pthread_mutex_unlock(&dev->bind_lock);
-
     job->out_tls[0] = gsl_tl_get(ctx->tl);
     job->out[0].handle = ctx->tl->handle;
     job->out[0].point = point;
@@ -713,16 +780,7 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
     job->pending = ctx->pending_wait;
     ctx->pending_wait = NULL;
 
-    pthread_mutex_lock(&ctx->qlock);
-    queued = ctx->jobs != NULL;
-    pthread_mutex_unlock(&ctx->qlock);
-
-    ret = queued ? GSL_FAILURE_TIMEOUT : gsl_submit_job_run(dev, ctx, job, 0);
-    if (ret == GSL_FAILURE_TIMEOUT) {
-        ret = gsl_context_defer(ctx, job);
-        if (!ret) job = NULL;
-    }
-
+    ret = gsl_context_queue(dev, ctx, &job);
     if (ret) {
         ctx->pending_wait = job->pending;
         job->pending = NULL;

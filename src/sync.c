@@ -456,7 +456,6 @@ int gsl_memory_bind_sync(gsl_devhandle_t handle, gsl_ctxid_t id, const struct gs
                          const struct gsl_timeline_signal* signal, uint32_t* ts) {
     struct gsl_device* dev = gsl_device_get(handle);
     struct drm_msm_vm_bind_op* ops = NULL;
-    struct gsl_sync_deps deps = {0};
     uint32_t nops = 0;
     int ret;
 
@@ -502,16 +501,12 @@ int gsl_memory_bind_sync(gsl_devhandle_t handle, gsl_ctxid_t id, const struct gs
         }
     }
 
-    ret = gsl_sync_deps_add(dev, &deps, wait);
-    if (ret) goto out;
-
-    ret = gsl_bind_ops(dev, ops, nops, deps.in, deps.count);
+    ret = gsl_context_bind(dev, id, ops, nops, wait);
     if (ret) goto out;
 
     if (signal && signal->count) ret = gsl_context_marker(handle, id, ts, NULL, signal);
 
 out:
-    gsl_sync_deps_fini(dev, &deps);
     free(ops);
     return ret;
 }
