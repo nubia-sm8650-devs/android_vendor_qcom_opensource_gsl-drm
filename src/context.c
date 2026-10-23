@@ -20,6 +20,7 @@
 #define GSL_IBDESC_MEMLIST_MASK 0x3u
 
 #define GSL_GUILTY_CONTEXT_RESET 0x8253
+#define GSL_INNOCENT_CONTEXT_RESET 0x8254
 
 #define GSL_WORKER_POLL_MS 100
 #define GSL_WORKER_DRAIN_MS 5000
@@ -512,6 +513,10 @@ static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
     };
 
     ret = gsl_ioctl(dev, DRM_IOCTL_MSM_GEM_SUBMIT, &req);
+    if (ret == GSL_FAILURE_HANG) {
+        __atomic_store_n(&dev->lost, true, __ATOMIC_RELAXED);
+        ret = GSL_FAILURE_CTXT_DEADLOCK;
+    }
     if (ret) GSL_ERR("submit on ctx %u ts %u failed %d", ctx->id, job->ts, ret);
 
 out:
@@ -972,7 +977,14 @@ int gsl_command_resetstatus(gsl_devhandle_t handle, uint32_t* status) {
     };
 
     gsl_ioctl(dev, DRM_IOCTL_MSM_SUBMITQUEUE_QUERY, &query);
-    *status = faults ? GSL_GUILTY_CONTEXT_RESET : 0;
+    if (faults) {
+        __atomic_store_n(&dev->lost, true, __ATOMIC_RELAXED);
+        *status = GSL_GUILTY_CONTEXT_RESET;
+    } else if (__atomic_load_n(&dev->lost, __ATOMIC_RELAXED)) {
+        *status = GSL_INNOCENT_CONTEXT_RESET;
+    } else {
+        *status = 0;
+    }
 
     gsl_context_put(ctx);
     return GSL_SUCCESS;

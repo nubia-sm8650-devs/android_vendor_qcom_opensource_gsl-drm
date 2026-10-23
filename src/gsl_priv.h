@@ -39,6 +39,7 @@ struct gsl_device {
     uint64_t uche_trap_base;
     bool has_prr;
     bool cached_noncoherent;
+    bool lost;
 
     uint32_t bind_queue;
     uint32_t bind_syncobj;

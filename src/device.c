@@ -178,6 +178,7 @@ int gsl_bind_ops(struct gsl_device* dev, const struct drm_msm_vm_bind_op* ops, u
     if (!ret) dev->bind_point = out.point;
     pthread_mutex_unlock(&dev->bind_lock);
 
+    if (ret == GSL_FAILURE_HANG) __atomic_store_n(&dev->lost, true, __ATOMIC_RELAXED);
     if (ret)
         GSL_ERR("VM_BIND of %u ops at 0x%llx failed %d", count, (unsigned long long)ops[0].iova,
                 ret);
