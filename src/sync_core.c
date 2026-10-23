@@ -186,6 +186,8 @@ int gsl_sync_deps_add(struct gsl_device* dev, struct gsl_sync_deps* deps,
     if (!obj) return GSL_SUCCESS;
 
     for (uint32_t i = 0; i < obj->count; i++) {
+        if (!obj->points[i].point) continue;
+
         ret = gsl_sync_deps_add_point(deps, obj->points[i].tl->handle, obj->points[i].point);
         if (ret) return ret;
     }

@@ -60,7 +60,9 @@ static bool gsl_ts_after(uint32_t a, uint32_t b) {
 }
 
 static uint64_t gsl_context_point(const struct gsl_context* ctx, uint32_t ts) {
-    return ctx->last_point + (int64_t)(int32_t)(ts - ctx->last_ts);
+    int64_t point = (int64_t)ctx->last_point + (int32_t)(ts - ctx->last_ts);
+
+    return point > 0 ? (uint64_t)point : 0;
 }
 
 uint64_t gsl_context_ts_point(struct gsl_context* ctx, uint32_t ts) {
@@ -513,6 +515,7 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
                               struct gsl_syncobj* wait, const struct gsl_timeline_signal* signal) {
     struct gsl_submit_job* job;
     uint32_t next, count;
+    uint64_t point;
     bool queued;
     int ret;
 
@@ -543,6 +546,7 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
         return ret;
     }
     job->fence = next;
+    point = ctx->submitted ? gsl_context_point(ctx, next) : 1;
 
     pthread_mutex_lock(&dev->bind_lock);
     job->bind_point = dev->bind_point;
@@ -550,7 +554,7 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
 
     job->out_tls[0] = gsl_tl_get(ctx->tl);
     job->out[0].handle = ctx->tl->handle;
-    job->out[0].point = gsl_context_point(ctx, next);
+    job->out[0].point = point;
     job->nout = 1;
     for (uint32_t i = 0; signal && i < signal->count; i++) {
         if (!signal->timelines[i]) continue;
@@ -577,7 +581,7 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
         ctx->pending_wait = job->pending;
         job->pending = NULL;
     } else {
-        ctx->last_point = gsl_context_point(ctx, next);
+        ctx->last_point = point;
         ctx->last_ts = next;
         ctx->submitted = true;
         *ts = next;

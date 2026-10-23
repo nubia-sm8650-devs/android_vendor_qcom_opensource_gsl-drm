@@ -282,8 +282,11 @@ int gsl_syncobj_export_fd(struct gsl_device* dev, const struct gsl_syncobj* obj,
     int fd = obj->fd >= 0 ? fcntl(obj->fd, F_DUPFD_CLOEXEC, 0) : -1;
 
     for (uint32_t i = 0; i < obj->count; i++) {
-        int point_fd, merged;
-        int ret = gsl_point_to_fd(dev, &obj->points[i], &point_fd);
+        int point_fd, merged, ret;
+
+        if (!obj->points[i].point) continue;
+
+        ret = gsl_point_to_fd(dev, &obj->points[i], &point_fd);
 
         if (ret) {
             if (fd >= 0) close(fd);
