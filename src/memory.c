@@ -190,7 +190,7 @@ void gsl_bo_destroy(struct gsl_device* dev, struct gsl_bo* bo) {
         gsl_bind_unmap(dev, bo->iova, bo->va_size);
         gsl_vma_free(&dev->vma, bo->iova, bo->va_size);
     }
-    if (bo->map) munmap(bo->map, bo->size);
+    if (bo->map) munmap(bo->map, gsl_page_align(bo->size));
     if (bo->type == GSL_BO_IMPORT)
         gsl_gem_ref_put(dev, bo->handle);
     else if (bo->handle)
@@ -200,7 +200,7 @@ void gsl_bo_destroy(struct gsl_device* dev, struct gsl_bo* bo) {
 }
 
 void gsl_bo_forget(struct gsl_bo* bo) {
-    if (bo->map) munmap(bo->map, bo->size);
+    if (bo->map) munmap(bo->map, gsl_page_align(bo->size));
     if (bo->dmabuf_fd >= 0) close(bo->dmabuf_fd);
     free(bo);
 }
@@ -313,9 +313,6 @@ int gsl_memory_free_after(struct gsl_memdesc* memdesc, const struct gsl_sync_poi
     }
     bo = memdesc->priv;
 
-    if (bo->type == GSL_BO_IMPORT && memdesc->hostptr)
-        munmap(memdesc->hostptr, gsl_page_align(memdesc->size));
-
     gsl_bo_put(dev, bo, after);
     gsl_memdesc_clear(memdesc);
 
@@ -421,14 +418,20 @@ int gsl_memory_mmap(struct gsl_memdesc* memdesc, uint64_t offset, uint64_t size,
     bo = memdesc->priv;
     if (!memdesc->hostptr) {
         if (bo->type == GSL_BO_IMPORT) {
-            void* map = mmap(NULL, gsl_page_align(memdesc->size), PROT_READ | PROT_WRITE,
-                             MAP_SHARED, bo->dmabuf_fd, 0);
+            pthread_mutex_lock(&gsl_import_lock);
+            if (!bo->map) {
+                void* map = mmap(NULL, gsl_page_align(bo->size), PROT_READ | PROT_WRITE, MAP_SHARED,
+                                 bo->dmabuf_fd, 0);
 
-            if (map == MAP_FAILED) {
-                GSL_ERR("mmap failed errno %d %s", errno, strerror(errno));
-                return GSL_FAILURE;
+                if (map == MAP_FAILED) {
+                    pthread_mutex_unlock(&gsl_import_lock);
+                    GSL_ERR("mmap failed errno %d %s", errno, strerror(errno));
+                    return GSL_FAILURE;
+                }
+                bo->map = map;
             }
-            memdesc->hostptr = map;
+            memdesc->hostptr = bo->map;
+            pthread_mutex_unlock(&gsl_import_lock);
         } else {
             if (!bo->map) {
                 if (!gsl_device_owns(dev, bo->gen)) return GSL_FAILURE_BADPARAM;
@@ -449,10 +452,7 @@ int gsl_memory_munmap(struct gsl_memdesc* memdesc) {
     if (!memdesc || !memdesc->priv) return GSL_FAILURE_BADPARAM;
 
     bo = memdesc->priv;
-    if (bo->type == GSL_BO_IMPORT && memdesc->hostptr) {
-        munmap(memdesc->hostptr, gsl_page_align(memdesc->size));
-        memdesc->hostptr = NULL;
-    }
+    if (bo->type == GSL_BO_IMPORT) memdesc->hostptr = NULL;
 
     return GSL_SUCCESS;
 }
