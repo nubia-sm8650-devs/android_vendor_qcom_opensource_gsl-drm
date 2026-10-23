@@ -56,6 +56,11 @@ LIBGSL {
         gsl_memory_write;
         gsl_memory_write_multiple;
         gsl_multiple_wait_timelines;
+        gsl_perfcounter_deselect;
+        gsl_perfcounter_query_selections;
+        gsl_perfcounter_read;
+        gsl_perfcounter_select;
+        gsl_perfcounters_read;
         gsl_present;
         gsl_read_timestamp;
         gsl_set_constraint;
@@ -81,6 +86,7 @@ LIBGSL {
         gsl_timeline_export_shared_handle;
         gsl_timeline_query;
         gsl_timeline_signal;
+        gsl_timestamp_cmp;
         os_alog;
         os_atoi;
         os_calloc;

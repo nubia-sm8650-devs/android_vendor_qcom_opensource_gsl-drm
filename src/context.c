@@ -47,6 +47,12 @@ static uint32_t gsl_next_ctx_id;
 static pthread_mutex_t gsl_defer_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct gsl_deferred* gsl_deferred;
 
+int gsl_timestamp_cmp(uint32_t a, uint32_t b) {
+    if (a == b) return 0;
+
+    return (int32_t)(a - b) > 0 ? 1 : -1;
+}
+
 static bool gsl_ts_after(uint32_t a, uint32_t b) {
     return (int32_t)(a - b) > 0;
 }
