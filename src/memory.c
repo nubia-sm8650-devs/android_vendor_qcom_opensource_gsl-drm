@@ -42,7 +42,7 @@ static uint64_t gsl_page_align(uint64_t size) {
 }
 
 static uint32_t gsl_align_shift(uint64_t flags, uint64_t size) {
-    uint32_t shift = (flags & GSL_MEMFLAGS_ALIGN_MASK) >> GSL_MEMFLAGS_ALIGN_SHIFT;
+    uint32_t shift = ((flags & GSL_MEMFLAGS_ALIGN_MASK) >> GSL_MEMFLAGS_ALIGN_SHIFT) & 0x3f;
 
     if ((flags & GSL_MEMFLAGS_MEMTYPE_MASK) == GSL_MEMTYPE_TEXTURE && size >= 0x10000 && shift < 16)
         shift = 16;
