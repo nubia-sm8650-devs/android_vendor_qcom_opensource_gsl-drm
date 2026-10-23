@@ -948,8 +948,9 @@ int gsl_command_readtimestamp(gsl_devhandle_t handle, gsl_ctxid_t id, uint32_t t
 
 int gsl_command_checktimestamp(gsl_devhandle_t handle, gsl_ctxid_t id, uint32_t ts, uint32_t type) {
     uint32_t current;
+    int ret = gsl_command_readtimestamp(handle, id, type, &current);
 
-    if (gsl_command_readtimestamp(handle, id, type, &current)) return 1;
+    if (ret) return ret;
 
     return !gsl_ts_after(ts, current);
 }
