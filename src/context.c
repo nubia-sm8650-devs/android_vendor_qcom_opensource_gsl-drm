@@ -35,12 +35,6 @@ struct gsl_cmdobj {
     uint64_t flags;
 };
 
-struct gsl_timeline_signal {
-    struct gsl_timeline_obj** timelines;
-    uint64_t* values;
-    uint32_t count;
-};
-
 struct gsl_deferred {
     struct gsl_bo* bo;
     struct gsl_deferred* next;
@@ -59,6 +53,16 @@ static bool gsl_ts_after(uint32_t a, uint32_t b) {
 
 static uint64_t gsl_context_point(const struct gsl_context* ctx, uint32_t ts) {
     return ctx->last_point + (int64_t)(int32_t)(ts - ctx->last_ts);
+}
+
+uint64_t gsl_context_ts_point(struct gsl_context* ctx, uint32_t ts) {
+    uint64_t point;
+
+    pthread_mutex_lock(&ctx->lock);
+    point = gsl_context_point(ctx, ts);
+    pthread_mutex_unlock(&ctx->lock);
+
+    return point;
 }
 
 struct gsl_context* gsl_context_get(gsl_ctxid_t id) {
@@ -452,6 +456,11 @@ static int gsl_issue_cmdobjs(gsl_devhandle_t handle, gsl_ctxid_t id, const struc
     return ret;
 }
 
+int gsl_context_marker(gsl_devhandle_t handle, gsl_ctxid_t id, uint32_t* ts,
+                       struct gsl_syncobj* wait, const struct gsl_timeline_signal* signal) {
+    return gsl_issue_cmdobjs(handle, id, NULL, 0, ts, wait, signal);
+}
+
 int gsl_command_issueib_with_alloc_list(gsl_devhandle_t handle, gsl_ctxid_t id,
                                         const struct gsl_cmdobj* cmds, uint32_t ncmds,
                                         const struct gsl_cmdobj* allocs, uint32_t nallocs,
@@ -622,6 +631,7 @@ int gsl_syncobj_merge_into(struct gsl_syncobj** dst, struct gsl_syncobj* src) {
         }
     }
 
+    merged->user = (*dst)->user || src->user;
     gsl_syncobj_put(*dst);
     *dst = merged;
 

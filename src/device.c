@@ -148,26 +148,27 @@ static int gsl_open_render_node(void) {
     return fd;
 }
 
-int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offset, uint64_t iova,
-             uint64_t range) {
+int gsl_bind_ops(struct gsl_device* dev, const struct drm_msm_vm_bind_op* ops, uint32_t count,
+                 const struct drm_msm_syncobj* in, uint32_t nin) {
     struct drm_msm_syncobj out = {.handle = dev->bind_syncobj};
     struct drm_msm_vm_bind req = {
-            .nr_ops = 1,
+            .nr_ops = count,
             .queue_id = dev->bind_queue,
+            .in_syncobjs = (uintptr_t)in,
             .out_syncobjs = (uintptr_t)&out,
+            .nr_in_syncobjs = nin,
             .nr_out_syncobjs = 1,
             .syncobj_stride = sizeof(out),
-            .op_stride = sizeof(req.op),
-            .op =
-                    {
-                            .op = op,
-                            .handle = handle,
-                            .obj_offset = offset,
-                            .iova = iova,
-                            .range = range,
-                    },
+            .op_stride = sizeof(*ops),
     };
     int ret;
+
+    if (!count) return GSL_SUCCESS;
+
+    if (count == 1)
+        req.op = ops[0];
+    else
+        req.ops = (uintptr_t)ops;
 
     pthread_mutex_lock(&dev->bind_lock);
     out.point = dev->bind_point + 1;
@@ -176,10 +177,23 @@ int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offs
     pthread_mutex_unlock(&dev->bind_lock);
 
     if (ret)
-        GSL_ERR("VM_BIND op %u of 0x%llx+0x%llx failed %d", op, (unsigned long long)iova,
-                (unsigned long long)range, ret);
+        GSL_ERR("VM_BIND of %u ops at 0x%llx failed %d", count, (unsigned long long)ops[0].iova,
+                ret);
 
     return ret;
+}
+
+int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offset, uint64_t iova,
+             uint64_t range) {
+    struct drm_msm_vm_bind_op bind = {
+            .op = op,
+            .handle = handle,
+            .obj_offset = offset,
+            .iova = iova,
+            .range = range,
+    };
+
+    return gsl_bind_ops(dev, &bind, 1, NULL, 0);
 }
 
 int gsl_bind_unmap(struct gsl_device* dev, uint64_t iova, uint64_t range) {

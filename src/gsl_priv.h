@@ -66,6 +66,7 @@ struct gsl_sync_point {
 
 struct gsl_syncobj {
     int refs;
+    bool user;
     int fd;
     uint32_t count;
     struct gsl_sync_point* points;
@@ -128,6 +129,8 @@ void gsl_vma_free(struct gsl_vma* vma, uint64_t addr, uint64_t size);
 int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offset, uint64_t iova,
              uint64_t range);
 int gsl_bind_unmap(struct gsl_device* dev, uint64_t iova, uint64_t range);
+int gsl_bind_ops(struct gsl_device* dev, const struct drm_msm_vm_bind_op* ops, uint32_t count,
+                 const struct drm_msm_syncobj* in, uint32_t nin);
 
 uint64_t gsl_abs_timeout_ns(uint32_t timeout_ms);
 
@@ -157,7 +160,16 @@ int gsl_sync_deps_add_point(struct gsl_sync_deps* deps, uint32_t handle, uint64_
 void gsl_sync_deps_fini(struct gsl_device* dev, struct gsl_sync_deps* deps);
 
 int gsl_syncobj_merge_into(struct gsl_syncobj** dst, struct gsl_syncobj* src);
+struct gsl_timeline_signal {
+    struct gsl_timeline_obj** timelines;
+    uint64_t* values;
+    uint32_t count;
+};
+
 struct gsl_context* gsl_context_get(gsl_ctxid_t id);
+uint64_t gsl_context_ts_point(struct gsl_context* ctx, uint32_t ts);
+int gsl_context_marker(gsl_devhandle_t handle, gsl_ctxid_t id, uint32_t* ts,
+                       struct gsl_syncobj* wait, const struct gsl_timeline_signal* signal);
 void gsl_context_put(struct gsl_context* ctx);
 int gsl_context_snapshot(struct gsl_sync_point** points, uint32_t* count);
 void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo);
