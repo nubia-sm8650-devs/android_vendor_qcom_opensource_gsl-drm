@@ -25,8 +25,17 @@
 #define GSL_PAGE_SHIFT 12
 #define GSL_PAGE_SIZE (1ull << GSL_PAGE_SHIFT)
 
+struct gsl_gem_ref {
+    uint32_t handle;
+    int refs;
+    struct gsl_gem_ref* next;
+};
+
 static pthread_mutex_t gsl_import_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct gsl_bo* gsl_imports;
+
+static pthread_mutex_t gsl_gem_ref_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct gsl_gem_ref* gsl_gem_refs;
 
 static uint64_t gsl_page_align(uint64_t size) {
     return (size + GSL_PAGE_SIZE - 1) & ~(GSL_PAGE_SIZE - 1);
@@ -82,6 +91,57 @@ static void gsl_gem_close(struct gsl_device* dev, uint32_t handle) {
     gsl_ioctl(dev, DRM_IOCTL_GEM_CLOSE, &req);
 }
 
+static int gsl_gem_import(struct gsl_device* dev, int fd, uint32_t* handle) {
+    struct drm_prime_handle prime = {.fd = fd};
+    struct gsl_gem_ref* ref;
+    int ret;
+
+    pthread_mutex_lock(&gsl_gem_ref_lock);
+    ret = gsl_ioctl(dev, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime);
+    if (ret) goto out;
+
+    for (ref = gsl_gem_refs; ref; ref = ref->next) {
+        if (ref->handle == prime.handle) break;
+    }
+    if (!ref) {
+        ref = calloc(1, sizeof(*ref));
+        if (!ref) {
+            gsl_gem_close(dev, prime.handle);
+            ret = GSL_FAILURE_OUTOFMEM;
+            goto out;
+        }
+        ref->handle = prime.handle;
+        ref->next = gsl_gem_refs;
+        gsl_gem_refs = ref;
+    }
+    ref->refs++;
+    *handle = prime.handle;
+
+out:
+    pthread_mutex_unlock(&gsl_gem_ref_lock);
+    return ret;
+}
+
+static void gsl_gem_ref_put(struct gsl_device* dev, uint32_t handle) {
+    struct gsl_gem_ref **link, *ref;
+    bool close = true;
+
+    pthread_mutex_lock(&gsl_gem_ref_lock);
+    for (link = &gsl_gem_refs; (ref = *link); link = &ref->next) {
+        if (ref->handle != handle) continue;
+
+        if (--ref->refs) {
+            close = false;
+        } else {
+            *link = ref->next;
+            free(ref);
+        }
+        break;
+    }
+    if (close) gsl_gem_close(dev, handle);
+    pthread_mutex_unlock(&gsl_gem_ref_lock);
+}
+
 static int gsl_bo_mmap(struct gsl_device* dev, struct gsl_bo* bo) {
     struct drm_msm_gem_info info = {
             .handle = bo->handle,
@@ -131,7 +191,10 @@ void gsl_bo_destroy(struct gsl_device* dev, struct gsl_bo* bo) {
         gsl_vma_free(&dev->vma, bo->iova, bo->va_size);
     }
     if (bo->map) munmap(bo->map, bo->size);
-    if (bo->handle) gsl_gem_close(dev, bo->handle);
+    if (bo->type == GSL_BO_IMPORT)
+        gsl_gem_ref_put(dev, bo->handle);
+    else if (bo->handle)
+        gsl_gem_close(dev, bo->handle);
     if (bo->dmabuf_fd >= 0) close(bo->dmabuf_fd);
     free(bo);
 }
@@ -241,9 +304,9 @@ int gsl_memory_import(uint64_t handle, uint64_t flags, struct gsl_memdesc* memde
 int gsl_memory_map_ext_fd_pure(int fd, uint64_t hostptr, uint64_t len, uint64_t offset,
                                uint32_t memtype, struct gsl_memdesc* memdesc, uint32_t flags) {
     struct gsl_device* dev = gsl_device_default();
-    struct drm_prime_handle prime = {.fd = fd};
     uint64_t gsl_flags = flags | GSL_MEMFLAGS_USERMEM_DMABUF;
     struct gsl_bo* bo;
+    uint32_t handle;
     off_t end;
     int ret;
 
@@ -251,15 +314,19 @@ int gsl_memory_map_ext_fd_pure(int fd, uint64_t hostptr, uint64_t len, uint64_t 
     gsl_memdesc_clear(memdesc);
     if (!dev) return GSL_FAILURE_NOTINITIALIZED;
 
-    ret = gsl_ioctl(dev, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime);
-    if (ret) return ret;
-
     pthread_mutex_lock(&gsl_import_lock);
+    ret = gsl_gem_import(dev, fd, &handle);
+    if (ret) {
+        pthread_mutex_unlock(&gsl_import_lock);
+        return ret;
+    }
+
     for (bo = gsl_imports; bo; bo = bo->next) {
-        if (bo->handle == prime.handle) break;
+        if (bo->handle == handle) break;
     }
 
     if (bo) {
+        gsl_gem_ref_put(dev, handle);
         if (len > bo->size) {
             GSL_ERR("Import matched GEM handle, but params don't match");
             pthread_mutex_unlock(&gsl_import_lock);
@@ -273,11 +340,11 @@ int gsl_memory_map_ext_fd_pure(int fd, uint64_t hostptr, uint64_t len, uint64_t 
     bo = calloc(1, sizeof(*bo));
     if (!bo) {
         pthread_mutex_unlock(&gsl_import_lock);
-        gsl_gem_close(dev, prime.handle);
+        gsl_gem_ref_put(dev, handle);
         return GSL_FAILURE_OUTOFMEM;
     }
     bo->type = GSL_BO_IMPORT;
-    bo->handle = prime.handle;
+    bo->handle = handle;
     bo->refs = 1;
     bo->dmabuf_fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
 
