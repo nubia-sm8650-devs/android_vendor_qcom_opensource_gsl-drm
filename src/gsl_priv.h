@@ -72,6 +72,8 @@ struct gsl_syncobj {
     struct gsl_sync_point* points;
 };
 
+struct gsl_submit_job;
+
 struct gsl_context {
     int refs;
     uint32_t id;
@@ -85,6 +87,14 @@ struct gsl_context {
     pthread_mutex_t lock;
     struct gsl_syncobj* pending_wait;
     struct gsl_context* next;
+
+    pthread_mutex_t qlock;
+    pthread_cond_t qcond;
+    struct gsl_submit_job* jobs;
+    struct gsl_submit_job* jobs_tail;
+    pthread_t worker;
+    bool has_worker;
+    bool stop;
 };
 
 struct gsl_bo {
