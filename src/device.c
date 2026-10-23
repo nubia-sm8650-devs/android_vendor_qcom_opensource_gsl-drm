@@ -181,6 +181,10 @@ int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offs
     return ret;
 }
 
+int gsl_bind_unmap(struct gsl_device* dev, uint64_t iova, uint64_t range) {
+    return gsl_bind(dev, MSM_VM_BIND_OP_UNMAP, 0, 0, iova, range);
+}
+
 static void gsl_device_destroy(struct gsl_device* dev) {
     if (dev->bind_syncobj) {
         struct drm_syncobj_destroy destroy = {.handle = dev->bind_syncobj};
@@ -230,6 +234,7 @@ static struct gsl_device* gsl_device_create(void) {
         dev->macrotile_mode = (uint32_t)value;
     if (!gsl_get_param(dev, MSM_PARAM_RAYTRACING, &value)) dev->raytracing = (uint32_t)value;
     if (!gsl_get_param(dev, MSM_PARAM_UCHE_TRAP_BASE, &value)) dev->uche_trap_base = value;
+    if (!gsl_get_param(dev, MSM_PARAM_HAS_PRR, &value)) dev->has_prr = value;
 
     if (gsl_get_param(dev, MSM_PARAM_VA_START, &dev->va_start) ||
         gsl_get_param(dev, MSM_PARAM_VA_SIZE, &dev->va_size)) {

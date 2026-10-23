@@ -34,7 +34,8 @@ struct gsl_device {
     uint32_t macrotile_mode;
     uint32_t raytracing;
     uint64_t uche_trap_base;
-    bool cached_coherent;
+    bool has_prr;
+    bool cached_noncoherent;
 
     uint32_t bind_queue;
     uint32_t bind_syncobj;
@@ -42,6 +43,26 @@ struct gsl_device {
     pthread_mutex_t bind_lock;
 
     struct gsl_vma vma;
+};
+
+enum gsl_bo_type {
+    GSL_BO_NORMAL,
+    GSL_BO_IMPORT,
+    GSL_BO_PHYS,
+    GSL_BO_VIRT,
+};
+
+struct gsl_bo {
+    enum gsl_bo_type type;
+    int refs;
+    uint32_t handle;
+    uint32_t msm_flags;
+    uint64_t size;
+    void* map;
+    uint64_t iova;
+    uint64_t va_size;
+    int dmabuf_fd;
+    struct gsl_bo* next;
 };
 
 struct gsl_library {
@@ -70,3 +91,4 @@ void gsl_vma_free(struct gsl_vma* vma, uint64_t addr, uint64_t size);
 
 int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offset, uint64_t iova,
              uint64_t range);
+int gsl_bind_unmap(struct gsl_device* dev, uint64_t iova, uint64_t range);
