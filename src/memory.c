@@ -577,7 +577,11 @@ int gsl_memory_cacheoperation_bulk(const struct gsl_cache_op* ops, uint32_t coun
     if (!ops || !count) return GSL_FAILURE_BADPARAM;
 
     for (uint32_t i = 0; i < count; i++) {
-        int ret = gsl_memory_cacheoperation(ops[i].memdesc, ops[i].offset, ops[i].size, ops[i].op);
+        int ret;
+
+        if (!ops[i].memdesc || !ops[i].memdesc->priv) continue;
+
+        ret = gsl_memory_cacheoperation(ops[i].memdesc, ops[i].offset, ops[i].size, ops[i].op);
 
         if (ret) return ret;
     }
