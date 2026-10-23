@@ -350,7 +350,7 @@ static int gsl_context_next_ts(struct gsl_context* ctx, uint32_t* ts) {
         }
     } else {
         next = ctx->last_ts + 1;
-        if (!next) next = 1;
+        if (next == UINT32_MAX) next = 1;
     }
 
     *ts = next;
@@ -361,7 +361,7 @@ static int gsl_context_next_ts(struct gsl_context* ctx, uint32_t* ts) {
 struct gsl_submit_job {
     struct drm_msm_gem_submit_cmd* cmds;
     uint32_t ncmds;
-    uint32_t fence;
+    uint32_t ts;
     uint64_t bind_point;
     struct gsl_syncobj* wait;
     struct gsl_syncobj* pending;
@@ -427,9 +427,8 @@ static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
     if (ret) goto out;
 
     struct drm_msm_gem_submit req = {
-            .flags = MSM_PIPE_3D0 | MSM_SUBMIT_FENCE_SN_IN | MSM_SUBMIT_NO_IMPLICIT |
-                     MSM_SUBMIT_SYNCOBJ_OUT | (deps.count ? MSM_SUBMIT_SYNCOBJ_IN : 0),
-            .fence = job->fence,
+            .flags = MSM_PIPE_3D0 | MSM_SUBMIT_NO_IMPLICIT | MSM_SUBMIT_SYNCOBJ_OUT |
+                     (deps.count ? MSM_SUBMIT_SYNCOBJ_IN : 0),
             .nr_cmds = job->ncmds,
             .cmds = (uintptr_t)job->cmds,
             .queueid = ctx->queue,
@@ -441,7 +440,7 @@ static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
     };
 
     ret = gsl_ioctl(dev, DRM_IOCTL_MSM_GEM_SUBMIT, &req);
-    if (ret) GSL_ERR("submit on ctx %u ts %u failed %d", ctx->id, job->fence, ret);
+    if (ret) GSL_ERR("submit on ctx %u ts %u failed %d", ctx->id, job->ts, ret);
 
 out:
     gsl_sync_deps_fini(dev, &deps);
@@ -466,7 +465,7 @@ static void* gsl_context_worker(void* data) {
         pthread_mutex_unlock(&ctx->qlock);
 
         ret = gsl_submit_job_run(dev, ctx, job, timeout);
-        if (ret) GSL_ERR("dropping deferred submit ts %u on ctx %u: %d", job->fence, ctx->id, ret);
+        if (ret) GSL_ERR("dropping deferred submit ts %u on ctx %u: %d", job->ts, ctx->id, ret);
 
         pthread_mutex_lock(&ctx->qlock);
         ctx->jobs = job->next;
@@ -545,7 +544,7 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
         gsl_submit_job_free(dev, job);
         return ret;
     }
-    job->fence = next;
+    job->ts = next;
     point = ctx->submitted ? gsl_context_point(ctx, next) : 1;
 
     pthread_mutex_lock(&dev->bind_lock);
