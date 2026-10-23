@@ -38,6 +38,7 @@ struct gsl_timeline_obj* gsl_tl_create(struct gsl_device* dev) {
         return NULL;
     }
     tl->handle = req.handle;
+    tl->gen = dev->gen;
     tl->refs = 1;
 
     return tl;
@@ -56,7 +57,7 @@ void gsl_tl_put(struct gsl_device* dev, struct gsl_timeline_obj* tl) {
 
     if (!dev) dev = gsl_device_default();
 
-    if (dev) {
+    if (gsl_device_owns(dev, tl->gen)) {
         req.handle = tl->handle;
         req.pad = 0;
         gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_DESTROY, &req);

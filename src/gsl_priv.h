@@ -26,6 +26,7 @@ struct gsl_vma {
 struct gsl_device {
     int fd;
     int refs;
+    uint32_t gen;
     uint32_t chip_id;
     uint32_t gmem_size;
     uint64_t gmem_base;
@@ -56,6 +57,7 @@ enum gsl_bo_type {
 
 struct gsl_timeline_obj {
     int refs;
+    uint32_t gen;
     uint32_t handle;
 };
 
@@ -100,6 +102,7 @@ struct gsl_context {
 struct gsl_bo {
     enum gsl_bo_type type;
     int refs;
+    uint32_t gen;
     uint32_t handle;
     uint32_t msm_flags;
     uint64_t size;
@@ -126,6 +129,7 @@ void* get_panel_settings(void);
 
 struct gsl_device* gsl_device_get(gsl_devhandle_t handle);
 struct gsl_device* gsl_device_default(void);
+bool gsl_device_owns(const struct gsl_device* dev, uint32_t gen);
 
 int gsl_ioctl(struct gsl_device* dev, unsigned long request, void* arg);
 int gsl_errno_status(int err);
@@ -184,5 +188,10 @@ void gsl_context_put(struct gsl_context* ctx);
 int gsl_context_snapshot(struct gsl_sync_point** points, uint32_t* count);
 void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo);
 void gsl_bo_destroy(struct gsl_device* dev, struct gsl_bo* bo);
-void gsl_reap_deferred(struct gsl_device* dev, bool wait);
+void gsl_bo_forget(struct gsl_bo* bo);
+void gsl_reap_deferred(struct gsl_device* dev);
+void gsl_contexts_stop(void);
+void gsl_contexts_reset(bool forked);
+void gsl_deferred_reset(void);
+void gsl_imports_reset(void);
 int gsl_memory_free_pure(struct gsl_memdesc* memdesc);

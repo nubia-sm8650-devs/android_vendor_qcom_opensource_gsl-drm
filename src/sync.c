@@ -466,7 +466,8 @@ int gsl_memory_bind_sync(gsl_devhandle_t handle, gsl_ctxid_t id, const struct gs
         const struct gsl_bo* virt = binds[i].virt ? binds[i].virt->priv : NULL;
         struct drm_msm_vm_bind_op* grown;
 
-        if (!virt || virt->type != GSL_BO_VIRT || !binds[i].regions) {
+        if (!virt || virt->type != GSL_BO_VIRT || !gsl_device_owns(dev, virt->gen) ||
+            !binds[i].regions) {
             ret = GSL_FAILURE_BADPARAM;
             goto out;
         }
@@ -482,6 +483,11 @@ int gsl_memory_bind_sync(gsl_devhandle_t handle, gsl_ctxid_t id, const struct gs
             const struct gsl_membind_region* region = &binds[i].regions[r];
             const struct gsl_bo* phys = region->phys ? region->phys->priv : NULL;
             struct drm_msm_vm_bind_op* op = &ops[nops++];
+
+            if (phys && !gsl_device_owns(dev, phys->gen)) {
+                ret = GSL_FAILURE_BADPARAM;
+                goto out;
+            }
 
             memset(op, 0, sizeof(*op));
             op->iova = virt->iova + region->target_offset;

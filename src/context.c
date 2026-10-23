@@ -167,7 +167,13 @@ static void gsl_retire_points_put(struct gsl_device* dev, struct gsl_bo* bo) {
 void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo) {
     struct gsl_deferred* node;
 
-    gsl_reap_deferred(dev, false);
+    if (!gsl_device_owns(dev, bo->gen)) {
+        gsl_retire_points_put(dev, bo);
+        gsl_bo_forget(bo);
+        return;
+    }
+
+    gsl_reap_deferred(dev);
 
     if (!bo->va_size || gsl_context_snapshot(&bo->retire, &bo->nretire) || !bo->nretire) {
         gsl_retire_points_put(dev, bo);
@@ -192,7 +198,7 @@ void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo) {
     pthread_mutex_unlock(&gsl_defer_lock);
 }
 
-void gsl_reap_deferred(struct gsl_device* dev, bool wait) {
+void gsl_reap_deferred(struct gsl_device* dev) {
     struct gsl_deferred **link, *node, *done = NULL;
 
     pthread_mutex_lock(&gsl_defer_lock);
@@ -200,15 +206,8 @@ void gsl_reap_deferred(struct gsl_device* dev, bool wait) {
     while ((node = *link)) {
         bool signaled = false;
 
-        if (wait) {
-            struct gsl_syncobj obj = {
-                    .count = node->bo->nretire, .points = node->bo->retire, .fd = -1};
-
-            gsl_syncobj_wait_internal(dev, &obj, GSL_TIMEOUT_INFINITE);
-            signaled = true;
-        } else if (gsl_sync_points_signaled(dev, node->bo->retire, node->bo->nretire, &signaled)) {
+        if (gsl_sync_points_signaled(dev, node->bo->retire, node->bo->nretire, &signaled))
             signaled = false;
-        }
 
         if (!signaled) {
             link = &node->next;
@@ -226,6 +225,24 @@ void gsl_reap_deferred(struct gsl_device* dev, bool wait) {
         gsl_retire_points_put(dev, node->bo);
         gsl_bo_destroy(dev, node->bo);
         free(node);
+    }
+}
+
+void gsl_deferred_reset(void) {
+    struct gsl_deferred* node;
+
+    pthread_mutex_lock(&gsl_defer_lock);
+    node = gsl_deferred;
+    gsl_deferred = NULL;
+    pthread_mutex_unlock(&gsl_defer_lock);
+
+    while (node) {
+        struct gsl_deferred* next = node->next;
+
+        gsl_retire_points_put(NULL, node->bo);
+        gsl_bo_forget(node->bo);
+        free(node);
+        node = next;
     }
 }
 
@@ -356,6 +373,41 @@ int gsl_context_destroy(gsl_devhandle_t handle, gsl_ctxid_t id) {
     gsl_context_put(ctx);
 
     return GSL_SUCCESS;
+}
+
+void gsl_contexts_stop(void) {
+    struct gsl_context* ctx;
+
+    pthread_mutex_lock(&gsl_ctx_lock);
+    for (ctx = gsl_contexts; ctx; ctx = ctx->next) ctx->refs++;
+    ctx = gsl_contexts;
+    pthread_mutex_unlock(&gsl_ctx_lock);
+
+    while (ctx) {
+        struct gsl_context* next = ctx->next;
+
+        gsl_context_stop_worker(ctx);
+        gsl_context_put(ctx);
+        ctx = next;
+    }
+}
+
+void gsl_contexts_reset(bool forked) {
+    struct gsl_context* ctx;
+
+    pthread_mutex_lock(&gsl_ctx_lock);
+    ctx = gsl_contexts;
+    gsl_contexts = NULL;
+    pthread_mutex_unlock(&gsl_ctx_lock);
+
+    if (forked) return;
+
+    while (ctx) {
+        struct gsl_context* next = ctx->next;
+
+        gsl_context_put(ctx);
+        ctx = next;
+    }
 }
 
 static int gsl_context_next_ts(struct gsl_context* ctx, uint32_t* ts) {
@@ -583,7 +635,7 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
     bool queued;
     int ret;
 
-    gsl_reap_deferred(dev, false);
+    gsl_reap_deferred(dev);
 
     job = calloc(1, sizeof(*job));
     if (!job) return GSL_FAILURE_OUTOFMEM;

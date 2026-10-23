@@ -199,6 +199,32 @@ void gsl_bo_destroy(struct gsl_device* dev, struct gsl_bo* bo) {
     free(bo);
 }
 
+void gsl_bo_forget(struct gsl_bo* bo) {
+    if (bo->map) munmap(bo->map, bo->size);
+    if (bo->dmabuf_fd >= 0) close(bo->dmabuf_fd);
+    free(bo);
+}
+
+void gsl_imports_reset(void) {
+    struct gsl_gem_ref* ref;
+
+    pthread_mutex_lock(&gsl_import_lock);
+    gsl_imports = NULL;
+    pthread_mutex_unlock(&gsl_import_lock);
+
+    pthread_mutex_lock(&gsl_gem_ref_lock);
+    ref = gsl_gem_refs;
+    gsl_gem_refs = NULL;
+    pthread_mutex_unlock(&gsl_gem_ref_lock);
+
+    while (ref) {
+        struct gsl_gem_ref* next = ref->next;
+
+        free(ref);
+        ref = next;
+    }
+}
+
 static void gsl_memdesc_clear(struct gsl_memdesc* memdesc) {
     memset(memdesc, 0, sizeof(*memdesc));
 }
@@ -222,6 +248,7 @@ int gsl_memory_alloc_pure_64(uint64_t size, uint64_t flags, struct gsl_memdesc* 
     bo = calloc(1, sizeof(*bo));
     if (!bo) return GSL_FAILURE_OUTOFMEM;
     bo->type = GSL_BO_NORMAL;
+    bo->gen = dev->gen;
     bo->size = aligned;
     bo->refs = 1;
     bo->dmabuf_fd = -1;
@@ -284,7 +311,6 @@ int gsl_memory_free_pure(struct gsl_memdesc* memdesc) {
         return GSL_FAILURE_BADPARAM;
     }
     bo = memdesc->priv;
-    if (!dev) return GSL_FAILURE_NOTINITIALIZED;
 
     if (bo->type == GSL_BO_IMPORT && memdesc->hostptr)
         munmap(memdesc->hostptr, gsl_page_align(memdesc->size));
@@ -344,6 +370,7 @@ int gsl_memory_map_ext_fd_pure(int fd, uint64_t hostptr, uint64_t len, uint64_t 
         return GSL_FAILURE_OUTOFMEM;
     }
     bo->type = GSL_BO_IMPORT;
+    bo->gen = dev->gen;
     bo->handle = handle;
     bo->refs = 1;
     bo->dmabuf_fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
@@ -399,6 +426,7 @@ int gsl_memory_mmap(struct gsl_memdesc* memdesc, uint64_t offset, uint64_t size,
             memdesc->hostptr = map;
         } else {
             if (!bo->map) {
+                if (!gsl_device_owns(dev, bo->gen)) return GSL_FAILURE_BADPARAM;
                 ret = gsl_bo_mmap(dev, bo);
                 if (ret) return ret;
             }
@@ -572,7 +600,7 @@ int gsl_memory_set_metainfo(const struct gsl_memdesc* memdesc, uint32_t flags, c
 
     if (!memdesc || !memdesc->priv || !info) return GSL_FAILURE_BADPARAM;
     bo = memdesc->priv;
-    if (!dev || !bo->handle) return GSL_SUCCESS;
+    if (!gsl_device_owns(dev, bo->gen) || !bo->handle) return GSL_SUCCESS;
 
     if (len >= sizeof(name)) len = sizeof(name) - 1;
     memcpy(name, info, len);
@@ -609,6 +637,7 @@ int gsl_memory_phys_alloc_pure(uint64_t size, uint64_t reserved, uint64_t* flags
     bo = calloc(1, sizeof(*bo));
     if (!bo) return GSL_FAILURE_OUTOFMEM;
     bo->type = GSL_BO_PHYS;
+    bo->gen = dev->gen;
     bo->size = aligned;
     bo->refs = 1;
     bo->dmabuf_fd = -1;
@@ -641,6 +670,7 @@ int gsl_memory_virt_alloc_pure(uint64_t size, uint32_t reserved, uint64_t* flags
     bo = calloc(1, sizeof(*bo));
     if (!bo) return GSL_FAILURE_OUTOFMEM;
     bo->type = GSL_BO_VIRT;
+    bo->gen = dev->gen;
     bo->size = aligned;
     bo->refs = 1;
     bo->dmabuf_fd = -1;

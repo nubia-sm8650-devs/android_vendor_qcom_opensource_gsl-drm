@@ -22,6 +22,8 @@ struct gsl_library gsl_lib = {
         .lock = PTHREAD_MUTEX_INITIALIZER,
 };
 
+static uint32_t gsl_device_gen;
+
 struct gsl_chip_gpu_id {
     uint8_t core;
     uint8_t major;
@@ -201,16 +203,6 @@ int gsl_bind_unmap(struct gsl_device* dev, uint64_t iova, uint64_t range) {
 }
 
 static void gsl_device_destroy(struct gsl_device* dev) {
-    if (dev->bind_syncobj) {
-        struct drm_syncobj_destroy destroy = {.handle = dev->bind_syncobj};
-
-        ioctl(dev->fd, DRM_IOCTL_SYNCOBJ_DESTROY, &destroy);
-    }
-    if (dev->bind_queue) {
-        uint32_t id = dev->bind_queue;
-
-        ioctl(dev->fd, DRM_IOCTL_MSM_SUBMITQUEUE_CLOSE, &id);
-    }
     gsl_vma_fini(&dev->vma);
     pthread_mutex_destroy(&dev->bind_lock);
     close(dev->fd);
@@ -227,6 +219,7 @@ static struct gsl_device* gsl_device_create(void) {
     if (!dev) return NULL;
 
     pthread_mutex_init(&dev->bind_lock, NULL);
+    dev->gen = ++gsl_device_gen;
     dev->fd = gsl_open_render_node();
     if (dev->fd < 0) {
         pthread_mutex_destroy(&dev->bind_lock);
@@ -295,17 +288,26 @@ struct gsl_device* gsl_device_default(void) {
     return gsl_lib.device;
 }
 
+bool gsl_device_owns(const struct gsl_device* dev, uint32_t gen) {
+    return dev && dev->gen == gen;
+}
+
 const char* gsl_library_version(void) {
     return "1.0.10";
 }
 
-static void gsl_library_reset(void) {
-    if (gsl_lib.device) {
-        gsl_reap_deferred(gsl_lib.device, true);
-        gsl_device_destroy(gsl_lib.device);
-    }
+static void gsl_library_reset(bool forked) {
+    struct gsl_device* dev = gsl_lib.device;
+
+    if (!forked) gsl_contexts_stop();
+
     gsl_lib.device = NULL;
     gsl_lib.refs = 0;
+
+    gsl_contexts_reset(forked);
+    gsl_deferred_reset();
+    gsl_imports_reset();
+    if (dev) gsl_device_destroy(dev);
 }
 
 int gsl_library_open(uint32_t flags) {
@@ -321,7 +323,7 @@ int gsl_library_open(uint32_t flags) {
 
     if (gsl_lib.refs) {
         GSL_WARN("forked from pid %d", gsl_lib.pid);
-        gsl_library_reset();
+        gsl_library_reset(true);
     }
 
     get_panel_settings();
@@ -345,8 +347,10 @@ int gsl_library_close(void) {
     pthread_mutex_lock(&gsl_lib.lock);
     if (!gsl_lib.refs) {
         ret = GSL_FAILURE_NOTINITIALIZED;
-    } else if (--gsl_lib.refs == 0 || gsl_lib.pid != getpid()) {
-        gsl_library_reset();
+    } else if (gsl_lib.pid != getpid()) {
+        gsl_library_reset(true);
+    } else if (--gsl_lib.refs == 0) {
+        gsl_library_reset(false);
     }
     pthread_mutex_unlock(&gsl_lib.lock);
 
