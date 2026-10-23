@@ -279,7 +279,7 @@ static uint32_t gsl_msm_priority(struct gsl_device* dev, uint32_t type, uint32_t
 
     if (type == GSL_CONTEXT_TYPE_CL)
         msm_prio = prio >= 1 && prio <= 7 ? 2 : 3;
-    else if (!prio)
+    else if (!(prio & 0x7))
         msm_prio = 2;
     else
         msm_prio = prio < 9 ? 1 : 3;
