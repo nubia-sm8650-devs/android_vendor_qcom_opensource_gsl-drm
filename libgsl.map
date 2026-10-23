@@ -4,6 +4,7 @@ LIBGSL {
         g_alogDebugMask;
         g_alogLowPerfAssertFlag;
         g_enableNativeAssert;
+        get_panel_settings;
         gfx_os_sleep;
         os_alog;
         os_atoi;
