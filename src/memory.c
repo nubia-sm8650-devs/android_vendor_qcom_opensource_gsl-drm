@@ -90,13 +90,10 @@ static int gsl_bo_mmap(struct gsl_device* dev, struct gsl_bo* bo) {
     void* map;
     int ret;
 
-    if (bo->dmabuf_fd >= 0) {
-        map = mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, bo->dmabuf_fd, 0);
-    } else {
-        ret = gsl_ioctl(dev, DRM_IOCTL_MSM_GEM_INFO, &info);
-        if (ret) return ret;
-        map = mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, dev->fd, info.value);
-    }
+    ret = gsl_ioctl(dev, DRM_IOCTL_MSM_GEM_INFO, &info);
+    if (ret) return ret;
+
+    map = mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, dev->fd, info.value);
 
     if (map == MAP_FAILED) {
         GSL_ERR("mmap failed errno %d %s", errno, strerror(errno));
@@ -226,8 +223,8 @@ int gsl_memory_free_pure(struct gsl_memdesc* memdesc) {
     bo = memdesc->priv;
     if (!dev) return GSL_FAILURE_NOTINITIALIZED;
 
-    if (bo->type == GSL_BO_IMPORT && memdesc->hostptr && bo->map != memdesc->hostptr)
-        munmap(memdesc->hostptr, bo->size);
+    if (bo->type == GSL_BO_IMPORT && memdesc->hostptr)
+        munmap(memdesc->hostptr, gsl_page_align(memdesc->size));
 
     gsl_bo_put(dev, bo);
     gsl_memdesc_clear(memdesc);
@@ -324,11 +321,22 @@ int gsl_memory_mmap(struct gsl_memdesc* memdesc, uint64_t offset, uint64_t size,
 
     bo = memdesc->priv;
     if (!memdesc->hostptr) {
-        if (!bo->map) {
-            ret = gsl_bo_mmap(dev, bo);
-            if (ret) return ret;
+        if (bo->type == GSL_BO_IMPORT) {
+            void* map = mmap(NULL, gsl_page_align(memdesc->size), PROT_READ | PROT_WRITE,
+                             MAP_SHARED, bo->dmabuf_fd, 0);
+
+            if (map == MAP_FAILED) {
+                GSL_ERR("mmap failed errno %d %s", errno, strerror(errno));
+                return GSL_FAILURE;
+            }
+            memdesc->hostptr = map;
+        } else {
+            if (!bo->map) {
+                ret = gsl_bo_mmap(dev, bo);
+                if (ret) return ret;
+            }
+            memdesc->hostptr = bo->map;
         }
-        memdesc->hostptr = bo->map;
     }
     *out = (uint8_t*)memdesc->hostptr + offset;
 
@@ -341,9 +349,8 @@ int gsl_memory_munmap(struct gsl_memdesc* memdesc) {
     if (!memdesc || !memdesc->priv) return GSL_FAILURE_BADPARAM;
 
     bo = memdesc->priv;
-    if (bo->type == GSL_BO_IMPORT && bo->map) {
-        munmap(bo->map, bo->size);
-        bo->map = NULL;
+    if (bo->type == GSL_BO_IMPORT && memdesc->hostptr) {
+        munmap(memdesc->hostptr, gsl_page_align(memdesc->size));
         memdesc->hostptr = NULL;
     }
 
