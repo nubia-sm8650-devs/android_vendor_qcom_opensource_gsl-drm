@@ -234,6 +234,11 @@ static struct gsl_device* gsl_device_create(void) {
         return NULL;
     }
 
+    if (gsl_set_param(dev, MSM_PARAM_EN_VM_BIND, 1)) {
+        GSL_ERR("Failure enabling VM_BIND");
+        goto err;
+    }
+
     if (gsl_get_param(dev, MSM_PARAM_CHIP_ID, &value)) {
         GSL_ERR("Failure getting CHIPID from kernel");
         goto err;
@@ -254,11 +259,6 @@ static struct gsl_device* gsl_device_create(void) {
     if (gsl_get_param(dev, MSM_PARAM_VA_START, &dev->va_start) ||
         gsl_get_param(dev, MSM_PARAM_VA_SIZE, &dev->va_size)) {
         GSL_ERR("Failure getting the GPU VA range from kernel");
-        goto err;
-    }
-
-    if (gsl_set_param(dev, MSM_PARAM_EN_VM_BIND, 1)) {
-        GSL_ERR("Failure enabling VM_BIND");
         goto err;
     }
 
