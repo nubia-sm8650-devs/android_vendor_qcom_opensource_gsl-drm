@@ -128,7 +128,7 @@ static int gsl_bo_map_gpu(struct gsl_device* dev, struct gsl_bo* bo, uint64_t si
     return GSL_SUCCESS;
 }
 
-static void gsl_bo_destroy(struct gsl_device* dev, struct gsl_bo* bo) {
+void gsl_bo_destroy(struct gsl_device* dev, struct gsl_bo* bo) {
     if (bo->va_size) {
         gsl_bind_unmap(dev, bo->iova, bo->va_size);
         gsl_vma_free(&dev->vma, bo->iova, bo->va_size);
@@ -212,7 +212,7 @@ static void gsl_bo_put(struct gsl_device* dev, struct gsl_bo* bo) {
         pthread_mutex_unlock(&gsl_import_lock);
     }
 
-    gsl_bo_destroy(dev, bo);
+    gsl_bo_release(dev, bo);
 }
 
 int gsl_memory_free_pure(struct gsl_memdesc* memdesc) {

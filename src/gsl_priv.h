@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <drm/msm_drm.h>
+
 #include "gsl.h"
 #include "gsl_os.h"
 
@@ -52,6 +54,38 @@ enum gsl_bo_type {
     GSL_BO_VIRT,
 };
 
+struct gsl_timeline_obj {
+    int refs;
+    uint32_t handle;
+};
+
+struct gsl_sync_point {
+    struct gsl_timeline_obj* tl;
+    uint64_t point;
+};
+
+struct gsl_syncobj {
+    int refs;
+    int fd;
+    uint32_t count;
+    struct gsl_sync_point* points;
+};
+
+struct gsl_context {
+    int refs;
+    uint32_t id;
+    uint32_t queue;
+    uint32_t type;
+    uint32_t flags;
+    struct gsl_timeline_obj* tl;
+    uint32_t last_ts;
+    uint64_t last_point;
+    bool submitted;
+    pthread_mutex_t lock;
+    struct gsl_syncobj* pending_wait;
+    struct gsl_context* next;
+};
+
 struct gsl_bo {
     enum gsl_bo_type type;
     int refs;
@@ -63,6 +97,8 @@ struct gsl_bo {
     uint64_t va_size;
     int dmabuf_fd;
     struct gsl_bo* next;
+    struct gsl_sync_point* retire;
+    uint32_t nretire;
 };
 
 struct gsl_library {
@@ -92,3 +128,39 @@ void gsl_vma_free(struct gsl_vma* vma, uint64_t addr, uint64_t size);
 int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offset, uint64_t iova,
              uint64_t range);
 int gsl_bind_unmap(struct gsl_device* dev, uint64_t iova, uint64_t range);
+
+uint64_t gsl_abs_timeout_ns(uint32_t timeout_ms);
+
+struct gsl_timeline_obj* gsl_tl_create(struct gsl_device* dev);
+struct gsl_timeline_obj* gsl_tl_get(struct gsl_timeline_obj* tl);
+void gsl_tl_put(struct gsl_device* dev, struct gsl_timeline_obj* tl);
+int gsl_tl_query(struct gsl_device* dev, struct gsl_timeline_obj* tl, uint64_t* value);
+
+struct gsl_syncobj* gsl_syncobj_new(uint32_t count);
+struct gsl_syncobj* gsl_syncobj_get(struct gsl_syncobj* obj);
+void gsl_syncobj_put(struct gsl_syncobj* obj);
+int gsl_sync_points_signaled(struct gsl_device* dev, const struct gsl_sync_point* points,
+                             uint32_t count, bool* signaled);
+int gsl_fd_merge(int a, int b);
+int gsl_syncobj_wait_internal(struct gsl_device* dev, struct gsl_syncobj* obj, uint32_t timeout_ms);
+
+struct gsl_sync_deps {
+    struct drm_msm_syncobj* in;
+    uint32_t count;
+    uint32_t* temps;
+    uint32_t ntemps;
+};
+
+int gsl_sync_deps_add(struct gsl_device* dev, struct gsl_sync_deps* deps,
+                      const struct gsl_syncobj* obj);
+int gsl_sync_deps_add_point(struct gsl_sync_deps* deps, uint32_t handle, uint64_t point);
+void gsl_sync_deps_fini(struct gsl_device* dev, struct gsl_sync_deps* deps);
+
+int gsl_syncobj_merge_into(struct gsl_syncobj** dst, struct gsl_syncobj* src);
+struct gsl_context* gsl_context_get(gsl_ctxid_t id);
+void gsl_context_put(struct gsl_context* ctx);
+int gsl_context_snapshot(struct gsl_sync_point** points, uint32_t* count);
+void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo);
+void gsl_bo_destroy(struct gsl_device* dev, struct gsl_bo* bo);
+void gsl_reap_deferred(struct gsl_device* dev, bool wait);
+int gsl_memory_free_pure(struct gsl_memdesc* memdesc);

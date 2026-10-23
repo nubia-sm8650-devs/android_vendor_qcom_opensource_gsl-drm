@@ -69,6 +69,7 @@ int gsl_errno_status(int err) {
         case ENOMEM:
             return GSL_FAILURE_OUTOFMEM;
         case EBUSY:
+        case ETIME:
         case ETIMEDOUT:
             return GSL_FAILURE_TIMEOUT;
         case ENODEV:
@@ -285,7 +286,10 @@ const char* gsl_library_version(void) {
 }
 
 static void gsl_library_reset(void) {
-    if (gsl_lib.device) gsl_device_destroy(gsl_lib.device);
+    if (gsl_lib.device) {
+        gsl_reap_deferred(gsl_lib.device, true);
+        gsl_device_destroy(gsl_lib.device);
+    }
     gsl_lib.device = NULL;
     gsl_lib.refs = 0;
 }

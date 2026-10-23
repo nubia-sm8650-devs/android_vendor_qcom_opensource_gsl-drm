@@ -6,6 +6,18 @@ LIBGSL {
         g_enableNativeAssert;
         get_panel_settings;
         gfx_os_sleep;
+        gsl_command_checktimestamp;
+        gsl_command_freememontimestamp_pure;
+        gsl_command_insertfence;
+        gsl_command_issueib;
+        gsl_command_issueib_sync;
+        gsl_command_issueib_timeline_sync;
+        gsl_command_issueib_with_alloc_list;
+        gsl_command_readtimestamp;
+        gsl_command_resetstatus;
+        gsl_command_waittimestamp;
+        gsl_context_create;
+        gsl_context_destroy;
         gsl_device_close;
         gsl_device_getfeatures;
         gsl_device_getinfo;
