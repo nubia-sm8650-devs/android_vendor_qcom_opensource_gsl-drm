@@ -78,6 +78,46 @@ uint64_t gsl_vma_alloc(struct gsl_vma* vma, uint64_t size, uint32_t align_shift)
     return addr;
 }
 
+int gsl_vma_reserve(struct gsl_vma* vma, uint64_t addr, uint64_t size) {
+    struct gsl_vma_range **link, *range;
+    uint64_t end = addr + size;
+    int ret = GSL_FAILURE_NOMOREAVAILABLE;
+
+    if (end < addr) return GSL_FAILURE_BADPARAM;
+
+    pthread_mutex_lock(&vma->lock);
+    for (link = &vma->free; (range = *link); link = &range->next) {
+        if (range->start > addr) break;
+        if (range->end < end) continue;
+
+        if (range->start < addr && range->end > end) {
+            struct gsl_vma_range* tail = malloc(sizeof(*tail));
+
+            if (!tail) {
+                ret = GSL_FAILURE_OUTOFMEM;
+                break;
+            }
+            tail->start = end;
+            tail->end = range->end;
+            tail->next = range->next;
+            range->end = addr;
+            range->next = tail;
+        } else if (range->start < addr) {
+            range->end = addr;
+        } else if (range->end > end) {
+            range->start = end;
+        } else {
+            *link = range->next;
+            free(range);
+        }
+        ret = GSL_SUCCESS;
+        break;
+    }
+    pthread_mutex_unlock(&vma->lock);
+
+    return ret;
+}
+
 void gsl_vma_free(struct gsl_vma* vma, uint64_t addr, uint64_t size) {
     struct gsl_vma_range **link, *range, *prev = NULL, *node;
     uint64_t end = addr + size;

@@ -25,6 +25,8 @@
 #define GSL_PAGE_SHIFT 12
 #define GSL_PAGE_SIZE (1ull << GSL_PAGE_SHIFT)
 
+#define GSL_SVM_ATTEMPTS 16
+
 struct gsl_gem_ref {
     uint32_t handle;
     int refs;
@@ -142,7 +144,7 @@ static void gsl_gem_ref_put(struct gsl_device* dev, uint32_t handle) {
     pthread_mutex_unlock(&gsl_gem_ref_lock);
 }
 
-static int gsl_bo_mmap(struct gsl_device* dev, struct gsl_bo* bo) {
+static int gsl_bo_mmap_at(struct gsl_device* dev, struct gsl_bo* bo, void* addr) {
     struct drm_msm_gem_info info = {
             .handle = bo->handle,
             .info = MSM_INFO_GET_OFFSET,
@@ -153,7 +155,8 @@ static int gsl_bo_mmap(struct gsl_device* dev, struct gsl_bo* bo) {
     ret = gsl_ioctl(dev, DRM_IOCTL_MSM_GEM_INFO, &info);
     if (ret) return ret;
 
-    map = mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, dev->fd, info.value);
+    map = mmap(addr, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED | (addr ? MAP_FIXED : 0), dev->fd,
+               info.value);
 
     if (map == MAP_FAILED) {
         GSL_ERR("mmap failed errno %d %s", errno, strerror(errno));
@@ -162,6 +165,10 @@ static int gsl_bo_mmap(struct gsl_device* dev, struct gsl_bo* bo) {
     bo->map = map;
 
     return GSL_SUCCESS;
+}
+
+static int gsl_bo_mmap(struct gsl_device* dev, struct gsl_bo* bo) {
+    return gsl_bo_mmap_at(dev, bo, NULL);
 }
 
 static int gsl_bo_map_gpu(struct gsl_device* dev, struct gsl_bo* bo, uint64_t size,
@@ -183,6 +190,54 @@ static int gsl_bo_map_gpu(struct gsl_device* dev, struct gsl_bo* bo, uint64_t si
     }
 
     return GSL_SUCCESS;
+}
+
+static int gsl_bo_map_svm(struct gsl_device* dev, struct gsl_bo* bo, uint32_t align_shift) {
+    uint64_t align = 1ull << align_shift;
+    uint64_t span = bo->size + align - GSL_PAGE_SIZE;
+    uint64_t va_end = dev->va_start + dev->va_size;
+    void* busy[GSL_SVM_ATTEMPTS];
+    unsigned int nbusy = 0;
+    int ret = GSL_FAILURE_OUTOFMEM;
+
+    while (nbusy < GSL_SVM_ATTEMPTS) {
+        void* area =
+                mmap(NULL, span, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        uint64_t addr, head, tail;
+
+        if (area == MAP_FAILED) break;
+
+        addr = ((uintptr_t)area + align - 1) & ~(align - 1);
+        if (addr < dev->va_start || addr + bo->size > va_end ||
+            gsl_vma_reserve(&dev->vma, addr, bo->size)) {
+            busy[nbusy++] = area;
+            continue;
+        }
+
+        head = addr - (uintptr_t)area;
+        tail = span - head - bo->size;
+        ret = gsl_bo_mmap_at(dev, bo, (void*)(uintptr_t)addr);
+        if (ret) {
+            gsl_vma_free(&dev->vma, addr, bo->size);
+            munmap(area, span);
+            break;
+        }
+        if (head) munmap(area, head);
+        if (tail) munmap((void*)(uintptr_t)(addr + bo->size), tail);
+
+        ret = gsl_bind(dev, MSM_VM_BIND_OP_MAP, bo->handle, 0, addr, bo->size);
+        if (ret) {
+            gsl_vma_free(&dev->vma, addr, bo->size);
+            break;
+        }
+        bo->iova = addr;
+        bo->va_size = bo->size;
+        break;
+    }
+
+    while (nbusy) munmap(busy[--nbusy], span);
+
+    return ret;
 }
 
 void gsl_bo_destroy(struct gsl_device* dev, struct gsl_bo* bo) {
@@ -243,7 +298,6 @@ int gsl_memory_alloc_pure_64(uint64_t size, uint64_t flags, struct gsl_memdesc* 
         GSL_ERR("DRM kernel compiled against doesn't support secure buffers");
         return GSL_FAILURE_BADPARAM;
     }
-    if (flags & GSL_MEMFLAGS_USE_CPU_MAP) return GSL_FAILURE_NOTSUPPORTED;
 
     bo = calloc(1, sizeof(*bo));
     if (!bo) return GSL_FAILURE_OUTOFMEM;
@@ -256,11 +310,16 @@ int gsl_memory_alloc_pure_64(uint64_t size, uint64_t flags, struct gsl_memdesc* 
     ret = gsl_bo_new(dev, aligned, flags, &bo->handle, &bo->msm_flags);
     if (ret) goto err;
 
-    ret = gsl_bo_mmap(dev, bo);
-    if (ret) goto err;
+    if (flags & GSL_MEMFLAGS_USE_CPU_MAP) {
+        ret = gsl_bo_map_svm(dev, bo, gsl_align_shift(flags, aligned));
+        if (ret) goto err;
+    } else {
+        ret = gsl_bo_mmap(dev, bo);
+        if (ret) goto err;
 
-    ret = gsl_bo_map_gpu(dev, bo, aligned, gsl_align_shift(flags, aligned));
-    if (ret) goto err;
+        ret = gsl_bo_map_gpu(dev, bo, aligned, gsl_align_shift(flags, aligned));
+        if (ret) goto err;
+    }
 
     memdesc->hostptr = bo->map;
     memdesc->gpuaddr = bo->iova;

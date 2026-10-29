@@ -139,6 +139,7 @@ int gsl_get_param(struct gsl_device* dev, uint32_t param, uint64_t* value);
 int gsl_vma_init(struct gsl_vma* vma, uint64_t start, uint64_t size);
 void gsl_vma_fini(struct gsl_vma* vma);
 uint64_t gsl_vma_alloc(struct gsl_vma* vma, uint64_t size, uint32_t align_shift);
+int gsl_vma_reserve(struct gsl_vma* vma, uint64_t addr, uint64_t size);
 void gsl_vma_free(struct gsl_vma* vma, uint64_t addr, uint64_t size);
 
 int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offset, uint64_t iova,
