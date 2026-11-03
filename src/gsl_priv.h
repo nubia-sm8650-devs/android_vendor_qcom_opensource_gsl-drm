@@ -175,6 +175,10 @@ int gsl_sync_deps_add(struct gsl_device* dev, struct gsl_sync_deps* deps,
                       const struct gsl_syncobj* obj);
 int gsl_sync_deps_add_point(struct gsl_sync_deps* deps, uint32_t handle, uint64_t point);
 void gsl_sync_deps_fini(struct gsl_device* dev, struct gsl_sync_deps* deps);
+int gsl_sync_deps_wait(struct gsl_device* dev, const struct gsl_sync_deps* deps, uint32_t flags,
+                       uint64_t timeout_abs_ns);
+int gsl_syncobj_add_pending(struct gsl_device* dev, const struct gsl_syncobj* obj,
+                            struct gsl_sync_deps* deps);
 
 int gsl_syncobj_merge_into(struct gsl_syncobj** dst, struct gsl_syncobj* src);
 struct gsl_timeline_signal {

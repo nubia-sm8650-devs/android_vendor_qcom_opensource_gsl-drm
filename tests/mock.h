@@ -34,6 +34,11 @@ struct gsl_mock {
     unsigned int available_waits;
     uint64_t transfer_flags;
     uint64_t wait_flags;
+    bool fence_unsignaled;
+    unsigned int block_timeouts;
+    unsigned int poll_waits;
+    unsigned int block_waits;
+    unsigned int sleeps;
 };
 
 extern struct gsl_mock mock;

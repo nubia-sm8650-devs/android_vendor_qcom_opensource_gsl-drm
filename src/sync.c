@@ -84,8 +84,8 @@ int gsl_syncobj_wait_multiple(struct gsl_syncobj** objs, int* results, uint64_t 
     if (!objs || !results || !count || !dev) return GSL_FAILURE_BADPARAM;
 
     for (;;) {
-        struct timespec now;
-        int ret = GSL_FAILURE_TIMEOUT;
+        struct gsl_sync_deps deps = {0};
+        int ret = GSL_FAILURE_TIMEOUT, err = GSL_SUCCESS;
 
         for (uint64_t i = 0; i < count; i++) {
             results[i] =
@@ -95,12 +95,17 @@ int gsl_syncobj_wait_multiple(struct gsl_syncobj** objs, int* results, uint64_t 
             else if (results[i] != GSL_FAILURE_TIMEOUT && ret == GSL_FAILURE_TIMEOUT)
                 ret = results[i];
         }
-        if (ret != GSL_FAILURE_TIMEOUT || !timeout_ms) return ret;
+        if (ret != GSL_FAILURE_TIMEOUT || !timeout_ms || gsl_abs_timeout_ns(0) >= deadline)
+            return ret;
 
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        if ((uint64_t)now.tv_sec * 1000000000 + (uint64_t)now.tv_nsec >= deadline) return ret;
-
-        usleep(1000);
+        for (uint64_t i = 0; i < count && !err; i++) {
+            if (results[i] == GSL_FAILURE_TIMEOUT)
+                err = gsl_syncobj_add_pending(dev, objs[i], &deps);
+        }
+        if (!err)
+            err = gsl_sync_deps_wait(dev, &deps, DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT, deadline);
+        gsl_sync_deps_fini(dev, &deps);
+        if (err) return err;
     }
 }
 

@@ -31,6 +31,11 @@ void* get_panel_settings(void) {
     return NULL;
 }
 
+int usleep(useconds_t usec) {
+    mock.sleeps++;
+    return 0;
+}
+
 int fcntl(int fd, int cmd, ...) {
     va_list ap;
     va_start(ap, cmd);
@@ -118,6 +123,20 @@ int ioctl(int fd, unsigned long request, ...) {
             errno = EINVAL;
             return -1;
         }
+    } else if (request == DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT && mock.fence_unsignaled) {
+        struct drm_syncobj_timeline_wait* req = arg;
+        if (req->flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL) {
+            mock.poll_waits++;
+            errno = ETIME;
+            return -1;
+        }
+        mock.block_waits++;
+        if (mock.block_timeouts) {
+            mock.block_timeouts--;
+            errno = ETIME;
+            return -1;
+        }
+        mock.fence_unsignaled = false;
     } else if (request == DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT && mock.point_pending) {
         struct drm_syncobj_timeline_wait* req = arg;
         mock.available_waits++;

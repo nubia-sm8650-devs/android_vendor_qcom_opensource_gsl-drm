@@ -545,36 +545,9 @@ static void gsl_submit_job_free(struct gsl_device* dev, struct gsl_submit_job* j
 
 static int gsl_deps_wait_available(struct gsl_device* dev, const struct gsl_sync_deps* deps,
                                    uint64_t timeout_abs_ns) {
-    uint32_t* handles;
-    uint64_t* points;
-    int ret;
-
-    if (!deps->count) return GSL_SUCCESS;
-
-    handles = calloc(deps->count, sizeof(*handles));
-    points = calloc(deps->count, sizeof(*points));
-    if (!handles || !points) {
-        free(handles);
-        free(points);
-        return GSL_FAILURE_OUTOFMEM;
-    }
-    for (uint32_t i = 0; i < deps->count; i++) {
-        handles[i] = deps->in[i].handle;
-        points[i] = deps->in[i].point;
-    }
-
-    struct drm_syncobj_timeline_wait wait = {
-            .handles = (uintptr_t)handles,
-            .points = (uintptr_t)points,
-            .timeout_nsec = (int64_t)timeout_abs_ns,
-            .count_handles = deps->count,
-            .flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL | DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,
-    };
-    ret = gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, &wait);
-
-    free(handles);
-    free(points);
-    return ret;
+    return gsl_sync_deps_wait(
+            dev, deps, DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL | DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,
+            timeout_abs_ns);
 }
 
 static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
