@@ -88,6 +88,11 @@ int ioctl(int fd, unsigned long request, ...) {
     } else if (request == DRM_IOCTL_MSM_GEM_SUBMIT) {
         struct drm_msm_gem_submit* req = arg;
         mock.submit_calls++;
+        if (mock.on_submit) {
+            void (*hook)(void) = mock.on_submit;
+            mock.on_submit = NULL;
+            hook();
+        }
         mock.submit_nin = req->nr_in_syncobjs;
         mock.submit_nout = req->nr_out_syncobjs;
         assert(mock.submit_nin <= 16 && mock.submit_nout <= 16);

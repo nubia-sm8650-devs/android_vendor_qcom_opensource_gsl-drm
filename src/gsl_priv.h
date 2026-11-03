@@ -89,6 +89,7 @@ struct gsl_context {
     uint64_t last_point;
     bool submitted;
     pthread_mutex_t lock;
+    pthread_mutex_t state_lock;
     struct gsl_syncobj* pending_wait;
     struct gsl_context* next;
 

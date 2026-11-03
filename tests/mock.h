@@ -39,6 +39,7 @@ struct gsl_mock {
     unsigned int poll_waits;
     unsigned int block_waits;
     unsigned int sleeps;
+    void (*on_submit)(void);
 };
 
 extern struct gsl_mock mock;

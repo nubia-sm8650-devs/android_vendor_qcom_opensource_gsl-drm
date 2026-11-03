@@ -75,9 +75,9 @@ static uint64_t gsl_context_point(const struct gsl_context* ctx, uint32_t ts) {
 uint64_t gsl_context_ts_point(struct gsl_context* ctx, uint32_t ts) {
     uint64_t point;
 
-    pthread_mutex_lock(&ctx->lock);
+    pthread_mutex_lock(&ctx->state_lock);
     point = gsl_context_point(ctx, ts);
-    pthread_mutex_unlock(&ctx->lock);
+    pthread_mutex_unlock(&ctx->state_lock);
 
     return point;
 }
@@ -119,6 +119,7 @@ void gsl_context_put(struct gsl_context* ctx) {
     }
     gsl_syncobj_put(ctx->pending_wait);
     gsl_tl_put(dev, ctx->tl);
+    pthread_mutex_destroy(&ctx->state_lock);
     pthread_mutex_destroy(&ctx->lock);
     free(ctx);
 }
@@ -132,15 +133,15 @@ int gsl_context_snapshot(struct gsl_sync_point** points, uint32_t* count) {
     for (ctx = gsl_contexts; ctx; ctx = ctx->next) {
         struct gsl_sync_point* grown;
 
-        pthread_mutex_lock(&ctx->lock);
+        pthread_mutex_lock(&ctx->state_lock);
         if (!ctx->submitted) {
-            pthread_mutex_unlock(&ctx->lock);
+            pthread_mutex_unlock(&ctx->state_lock);
             continue;
         }
 
         grown = realloc(out, (n + 1) * sizeof(*out));
         if (!grown) {
-            pthread_mutex_unlock(&ctx->lock);
+            pthread_mutex_unlock(&ctx->state_lock);
             pthread_mutex_unlock(&gsl_ctx_lock);
             for (uint32_t i = 0; i < n; i++) gsl_tl_put(NULL, out[i].tl);
             free(out);
@@ -150,7 +151,7 @@ int gsl_context_snapshot(struct gsl_sync_point** points, uint32_t* count) {
         out[n].tl = gsl_tl_get(ctx->tl);
         out[n].point = ctx->last_point;
         n++;
-        pthread_mutex_unlock(&ctx->lock);
+        pthread_mutex_unlock(&ctx->state_lock);
     }
     pthread_mutex_unlock(&gsl_ctx_lock);
 
@@ -368,6 +369,7 @@ static int gsl_context_new(struct gsl_device* dev, uint32_t type, uint32_t flags
     ctx->flags = flags;
     ctx->last_point = 0;
     pthread_mutex_init(&ctx->lock, NULL);
+    pthread_mutex_init(&ctx->state_lock, NULL);
     pthread_mutex_init(&ctx->qlock, NULL);
     pthread_cond_init(&ctx->qcond, NULL);
 
@@ -407,6 +409,7 @@ err:
     }
     pthread_cond_destroy(&ctx->qcond);
     pthread_mutex_destroy(&ctx->qlock);
+    pthread_mutex_destroy(&ctx->state_lock);
     pthread_mutex_destroy(&ctx->lock);
     free(ctx);
     return ret;
@@ -446,10 +449,10 @@ int gsl_context_destroy(gsl_devhandle_t handle, gsl_ctxid_t id) {
 
     gsl_context_stop_worker(ctx);
 
-    pthread_mutex_lock(&ctx->lock);
+    pthread_mutex_lock(&ctx->state_lock);
     point.tl = ctx->tl;
     point.point = ctx->submitted ? ctx->last_point : 0;
-    pthread_mutex_unlock(&ctx->lock);
+    pthread_mutex_unlock(&ctx->state_lock);
 
     struct gsl_syncobj obj = {.count = 1, .points = &point, .fd = -1};
 
@@ -788,9 +791,11 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
         ctx->pending_wait = job->pending;
         job->pending = NULL;
     } else {
+        pthread_mutex_lock(&ctx->state_lock);
         ctx->last_point = point;
         ctx->last_ts = next;
         ctx->submitted = true;
+        pthread_mutex_unlock(&ctx->state_lock);
         *ts = next;
     }
 
@@ -925,9 +930,9 @@ static int gsl_context_retired(struct gsl_device* dev, struct gsl_context* ctx, 
 
     if (ret) return ret;
 
-    pthread_mutex_lock(&ctx->lock);
+    pthread_mutex_lock(&ctx->state_lock);
     *ts = ctx->last_ts - (uint32_t)(ctx->last_point - point);
-    pthread_mutex_unlock(&ctx->lock);
+    pthread_mutex_unlock(&ctx->state_lock);
 
     return GSL_SUCCESS;
 }
@@ -945,9 +950,9 @@ int gsl_command_readtimestamp(gsl_devhandle_t handle, gsl_ctxid_t id, uint32_t t
 
     switch (type) {
         case GSL_TIMESTAMP_QUEUED:
-            pthread_mutex_lock(&ctx->lock);
+            pthread_mutex_lock(&ctx->state_lock);
             *out = ctx->last_ts;
-            pthread_mutex_unlock(&ctx->lock);
+            pthread_mutex_unlock(&ctx->state_lock);
             break;
         case GSL_TIMESTAMP_CONSUMED:
         case GSL_TIMESTAMP_RETIRED:
@@ -984,10 +989,10 @@ int gsl_command_waittimestamp(gsl_devhandle_t handle, gsl_ctxid_t id, uint32_t t
     ctx = gsl_context_get(id);
     if (!ctx) return GSL_FAILURE_BADPARAM;
 
-    pthread_mutex_lock(&ctx->lock);
+    pthread_mutex_lock(&ctx->state_lock);
     point.tl = ctx->tl;
     point.point = gsl_context_point(ctx, ts);
-    pthread_mutex_unlock(&ctx->lock);
+    pthread_mutex_unlock(&ctx->state_lock);
 
     struct gsl_syncobj obj = {.count = 1, .points = &point, .fd = -1};
 
