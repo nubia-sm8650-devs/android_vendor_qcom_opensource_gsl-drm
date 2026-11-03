@@ -282,6 +282,8 @@ static int gsl_signaled_fd(struct gsl_device* dev, int* fd) {
 int gsl_syncobj_export_fd(struct gsl_device* dev, const struct gsl_syncobj* obj, int* out) {
     int fd = obj->fd >= 0 ? fcntl(obj->fd, F_DUPFD_CLOEXEC, 0) : -1;
 
+    if (obj->fd >= 0 && fd < 0) return GSL_FAILURE_SYSTEMERROR;
+
     for (uint32_t i = 0; i < obj->count; i++) {
         int point_fd, merged, ret;
 
