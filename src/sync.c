@@ -14,6 +14,7 @@
 #include "gsl_priv.h"
 
 #define GSL_TIMELINE_WAIT_ANY 2
+#define GSL_EXPORT_WAIT_SLICE_MS 1000
 
 struct gsl_syncsource {
     int refs;
@@ -223,23 +224,59 @@ int gsl_syncobj_create_from_fd(struct gsl_syncobj** out, int fd) {
     return GSL_SUCCESS;
 }
 
+static int gsl_point_transfer(struct gsl_device* dev, const struct gsl_sync_point* point,
+                              uint32_t dst) {
+    struct drm_syncobj_transfer transfer = {
+            .src_handle = point->tl->handle,
+            .dst_handle = dst,
+            .src_point = point->point,
+    };
+
+    return gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_TRANSFER, &transfer);
+}
+
+static int gsl_point_wait_submitted(struct gsl_device* dev, const struct gsl_sync_point* point) {
+    uint64_t start = gsl_abs_timeout_ns(0);
+    uint64_t waited_us;
+    int ret;
+
+    for (;;) {
+        struct drm_syncobj_timeline_wait wait = {
+                .handles = (uintptr_t)&point->tl->handle,
+                .points = (uintptr_t)&point->point,
+                .timeout_nsec = (int64_t)gsl_abs_timeout_ns(GSL_EXPORT_WAIT_SLICE_MS),
+                .count_handles = 1,
+                .flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,
+        };
+
+        ret = gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, &wait);
+        waited_us = (gsl_abs_timeout_ns(0) - start) / 1000;
+        if (ret != GSL_FAILURE_TIMEOUT) break;
+
+        GSL_WARN("fence export still waiting for submission of point %llu after %llu ms",
+                 (unsigned long long)point->point, (unsigned long long)(waited_us / 1000));
+    }
+
+    GSL_WARN("fence export waited %llu us for submission of point %llu: %d",
+             (unsigned long long)waited_us, (unsigned long long)point->point, ret);
+
+    return ret;
+}
+
 static int gsl_point_to_fd(struct gsl_device* dev, const struct gsl_sync_point* point, int* fd) {
     struct drm_syncobj_create create = {0};
     struct drm_syncobj_destroy destroy = {0};
-    struct drm_syncobj_transfer transfer;
     struct drm_syncobj_handle export;
     int ret;
 
     ret = gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_CREATE, &create);
     if (ret) return ret;
 
-    transfer = (struct drm_syncobj_transfer){
-            .src_handle = point->tl->handle,
-            .dst_handle = create.handle,
-            .src_point = point->point,
-            .flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT,
-    };
-    ret = gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_TRANSFER, &transfer);
+    ret = gsl_point_transfer(dev, point, create.handle);
+    if (ret == GSL_FAILURE_BADPARAM) {
+        ret = gsl_point_wait_submitted(dev, point);
+        if (!ret) ret = gsl_point_transfer(dev, point, create.handle);
+    }
     if (!ret) {
         export = (struct drm_syncobj_handle){
                 .handle = create.handle,

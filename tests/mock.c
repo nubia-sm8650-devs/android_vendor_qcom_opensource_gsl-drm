@@ -110,6 +110,24 @@ int ioctl(int fd, unsigned long request, ...) {
             errno = mock.sync_errno;
             return -1;
         }
+    } else if (request == DRM_IOCTL_SYNCOBJ_TRANSFER) {
+        struct drm_syncobj_transfer* req = arg;
+        mock.transfers++;
+        mock.transfer_flags |= req->flags;
+        if (mock.point_pending) {
+            errno = EINVAL;
+            return -1;
+        }
+    } else if (request == DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT && mock.point_pending) {
+        struct drm_syncobj_timeline_wait* req = arg;
+        mock.available_waits++;
+        mock.wait_flags |= req->flags;
+        if (mock.pending_wait_timeouts) {
+            mock.pending_wait_timeouts--;
+            errno = ETIME;
+            return -1;
+        }
+        mock.point_pending = false;
     } else if (request == DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD) {
         ((struct drm_syncobj_handle*)arg)->fd = dup(fd);
     }

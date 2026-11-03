@@ -28,6 +28,12 @@ struct gsl_mock {
     uint64_t sync_flags[16];
     unsigned int sync_calls;
     uint64_t completed;
+    bool point_pending;
+    unsigned int pending_wait_timeouts;
+    unsigned int transfers;
+    unsigned int available_waits;
+    uint64_t transfer_flags;
+    uint64_t wait_flags;
 };
 
 extern struct gsl_mock mock;
