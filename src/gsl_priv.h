@@ -62,6 +62,7 @@ struct gsl_timeline_obj {
     uint32_t handle;
     uint32_t deferred_index;
     uint64_t available;
+    uint64_t signaled;
 };
 
 struct gsl_sync_point {
@@ -175,6 +176,8 @@ int gsl_tl_query(struct gsl_device* dev, struct gsl_timeline_obj* tl, uint64_t* 
 void gsl_tl_mark_available(struct gsl_timeline_obj* tl, uint64_t point);
 bool gsl_tl_available(const struct gsl_timeline_obj* tl, uint64_t point);
 bool gsl_syncobj_points_available(const struct gsl_syncobj* obj);
+void gsl_tl_mark_signaled(struct gsl_timeline_obj* tl, uint64_t point);
+bool gsl_tl_signaled(const struct gsl_timeline_obj* tl, uint64_t point);
 
 struct gsl_syncobj* gsl_syncobj_new(uint32_t count);
 struct gsl_syncobj* gsl_syncobj_get(struct gsl_syncobj* obj);

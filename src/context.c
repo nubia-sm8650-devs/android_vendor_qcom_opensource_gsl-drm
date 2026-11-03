@@ -239,6 +239,14 @@ void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo, const struct gsl_
     pthread_mutex_unlock(&gsl_defer_lock);
 }
 
+static bool gsl_bo_retired(const struct gsl_bo* bo) {
+    for (uint32_t i = 0; i < bo->nretire; i++) {
+        if (!gsl_tl_signaled(bo->retire[i].tl, bo->retire[i].point)) return false;
+    }
+
+    return true;
+}
+
 void gsl_reap_deferred(struct gsl_device* dev) {
     struct gsl_deferred *batch[GSL_REAP_BATCH_SIZE], *node, *done = NULL;
     struct gsl_timeline_obj** tls = NULL;
@@ -250,50 +258,48 @@ void gsl_reap_deferred(struct gsl_device* dev) {
     pthread_mutex_lock(&gsl_defer_lock);
     for (node = gsl_deferred; node && count < GSL_REAP_BATCH_SIZE; node = node->next) {
         batch[count++] = node;
-        max_points += node->bo->nretire;
+        if (!gsl_bo_retired(node->bo)) max_points += node->bo->nretire;
     }
     if (!count) goto unlock;
 
-    tls = calloc(max_points, sizeof(*tls));
-    handles = calloc(max_points, sizeof(*handles));
-    values = calloc(max_points, sizeof(*values));
-    if (!tls || !handles || !values) goto unlock;
+    if (max_points) {
+        tls = calloc(max_points, sizeof(*tls));
+        handles = calloc(max_points, sizeof(*handles));
+        values = calloc(max_points, sizeof(*values));
+        if (!tls || !handles || !values) goto unlock;
+    }
 
-    for (uint32_t i = 0; i < count; i++) {
+    for (uint32_t i = 0; i < count && max_points; i++) {
         struct gsl_bo* bo = batch[i]->bo;
 
         for (uint32_t j = 0; j < bo->nretire; j++) {
             struct gsl_timeline_obj* tl = bo->retire[j].tl;
 
-            if (tl->deferred_index) continue;
+            if (tl->deferred_index || gsl_tl_signaled(tl, bo->retire[j].point)) continue;
             tls[ntls] = tl;
             handles[ntls] = tl->handle;
             tl->deferred_index = ++ntls;
         }
     }
 
-    struct drm_syncobj_timeline_array req = {
-            .handles = (uintptr_t)handles,
-            .points = (uintptr_t)values,
-            .count_handles = ntls,
-    };
-    if (gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_QUERY, &req)) goto reset;
+    if (ntls) {
+        struct drm_syncobj_timeline_array req = {
+                .handles = (uintptr_t)handles,
+                .points = (uintptr_t)values,
+                .count_handles = ntls,
+        };
+
+        if (!gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_QUERY, &req)) {
+            for (uint32_t i = 0; i < ntls; i++) gsl_tl_mark_signaled(tls[i], values[i]);
+        }
+        for (uint32_t i = 0; i < ntls; i++) tls[i]->deferred_index = 0;
+    }
 
     gsl_deferred = batch[count - 1]->next;
     if (!gsl_deferred) gsl_deferred_tail = NULL;
     for (uint32_t i = 0; i < count; i++) {
-        struct gsl_bo* bo = batch[i]->bo;
-        bool signaled = true;
-
-        for (uint32_t j = 0; j < bo->nretire; j++) {
-            if (values[bo->retire[j].tl->deferred_index - 1] < bo->retire[j].point) {
-                signaled = false;
-                break;
-            }
-        }
-
         node = batch[i];
-        if (signaled) {
+        if (gsl_bo_retired(node->bo)) {
             node->next = done;
             done = node;
         } else {
@@ -306,8 +312,6 @@ void gsl_reap_deferred(struct gsl_device* dev) {
         }
     }
 
-reset:
-    for (uint32_t i = 0; i < ntls; i++) tls[i]->deferred_index = 0;
 unlock:
     pthread_mutex_unlock(&gsl_defer_lock);
     free(tls);
@@ -659,7 +663,7 @@ static void gsl_submit_job_signal(struct gsl_device* dev, const struct gsl_submi
 
         if (!gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &req)) {
             for (uint32_t i = 0; i < job->nout; i++)
-                gsl_tl_mark_available(job->out_tls[i], job->out[i].point);
+                gsl_tl_mark_signaled(job->out_tls[i], job->out[i].point);
         }
     }
 
@@ -1036,8 +1040,20 @@ int gsl_command_readtimestamp(gsl_devhandle_t handle, gsl_ctxid_t id, uint32_t t
 }
 
 int gsl_command_checktimestamp(gsl_devhandle_t handle, gsl_ctxid_t id, uint32_t ts, uint32_t type) {
+    struct gsl_context* ctx;
     uint32_t current;
-    int ret = gsl_command_readtimestamp(handle, id, type, &current);
+    int ret;
+
+    if (gsl_device_get(handle) &&
+        (type == GSL_TIMESTAMP_CONSUMED || type == GSL_TIMESTAMP_RETIRED) &&
+        (ctx = gsl_context_get(id))) {
+        bool retired = gsl_tl_signaled(ctx->tl, gsl_context_ts_point(ctx, ts));
+
+        gsl_context_put(ctx);
+        if (retired) return 1;
+    }
+
+    ret = gsl_command_readtimestamp(handle, id, type, &current);
 
     if (ret) return ret;
 

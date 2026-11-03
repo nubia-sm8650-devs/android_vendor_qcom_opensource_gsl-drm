@@ -196,7 +196,7 @@ static int gsl_tl_signal(struct gsl_device* dev, struct gsl_timeline_obj* tl, ui
 
     int ret = gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &req);
 
-    if (!ret) gsl_tl_mark_available(tl, value);
+    if (!ret) gsl_tl_mark_signaled(tl, value);
 
     return ret;
 }

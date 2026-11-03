@@ -74,21 +74,39 @@ int gsl_tl_query(struct gsl_device* dev, struct gsl_timeline_obj* tl, uint64_t* 
             .count_handles = 1,
     };
 
+    int ret;
+
     *value = 0;
 
-    return gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_QUERY, &req);
+    ret = gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_QUERY, &req);
+    if (!ret) gsl_tl_mark_signaled(tl, *value);
+
+    return ret;
+}
+
+static void gsl_atomic_max(uint64_t* target, uint64_t value) {
+    uint64_t cur = __atomic_load_n(target, __ATOMIC_RELAXED);
+
+    while (cur < value && !__atomic_compare_exchange_n(target, &cur, value, true, __ATOMIC_RELEASE,
+                                                       __ATOMIC_RELAXED)) {
+    }
 }
 
 void gsl_tl_mark_available(struct gsl_timeline_obj* tl, uint64_t point) {
-    uint64_t cur = __atomic_load_n(&tl->available, __ATOMIC_RELAXED);
-
-    while (cur < point && !__atomic_compare_exchange_n(&tl->available, &cur, point, true,
-                                                       __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
-    }
+    gsl_atomic_max(&tl->available, point);
 }
 
 bool gsl_tl_available(const struct gsl_timeline_obj* tl, uint64_t point) {
     return __atomic_load_n(&tl->available, __ATOMIC_ACQUIRE) >= point;
+}
+
+void gsl_tl_mark_signaled(struct gsl_timeline_obj* tl, uint64_t point) {
+    gsl_atomic_max(&tl->available, point);
+    gsl_atomic_max(&tl->signaled, point);
+}
+
+bool gsl_tl_signaled(const struct gsl_timeline_obj* tl, uint64_t point) {
+    return __atomic_load_n(&tl->signaled, __ATOMIC_ACQUIRE) >= point;
 }
 
 bool gsl_syncobj_points_available(const struct gsl_syncobj* obj) {
@@ -153,8 +171,11 @@ int gsl_sync_points_signaled(struct gsl_device* dev, const struct gsl_sync_point
 
     for (uint32_t i = 0; i < count; i++) {
         uint64_t value;
-        int ret = gsl_tl_query(dev, points[i].tl, &value);
+        int ret;
 
+        if (gsl_tl_signaled(points[i].tl, points[i].point)) continue;
+
+        ret = gsl_tl_query(dev, points[i].tl, &value);
         if (ret) return ret;
         if (value < points[i].point) {
             *signaled = false;
@@ -314,14 +335,22 @@ int gsl_syncobj_wait_internal(struct gsl_device* dev, struct gsl_syncobj* obj,
                               uint32_t timeout_ms) {
     uint64_t deadline = gsl_abs_timeout_ns(timeout_ms);
     struct gsl_sync_deps deps = {0};
-    int ret;
+    int ret = GSL_SUCCESS;
 
-    ret = gsl_sync_deps_add_points(&deps, obj);
+    for (uint32_t i = 0; i < obj->count && !ret; i++) {
+        const struct gsl_sync_point* point = &obj->points[i];
+
+        if (point->point && !gsl_tl_signaled(point->tl, point->point))
+            ret = gsl_sync_deps_add_point(&deps, point->tl->handle, point->point);
+    }
     if (!ret)
         ret = gsl_sync_deps_wait(
                 dev, &deps,
                 DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL | DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT, deadline);
     gsl_sync_deps_fini(dev, &deps);
+
+    for (uint32_t i = 0; i < obj->count && !ret; i++)
+        gsl_tl_mark_signaled(obj->points[i].tl, obj->points[i].point);
 
     if (!ret && obj->fd >= 0) ret = gsl_fd_wait(obj->fd, deadline);
 
@@ -335,7 +364,7 @@ int gsl_syncobj_add_pending(struct gsl_device* dev, const struct gsl_syncobj* ob
         uint64_t value;
         int ret;
 
-        if (!point->point) continue;
+        if (!point->point || gsl_tl_signaled(point->tl, point->point)) continue;
 
         ret = gsl_tl_query(dev, point->tl, &value);
         if (ret) return ret;

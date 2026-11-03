@@ -25,6 +25,8 @@ int main(void) {
     assert(!results[0] && !results[1]);
     assert(mock.poll_waits == 2 && mock.block_waits == 1 && !mock.sleeps);
 
+    pa.point = 3;
+    pb.point = 4;
     mock.fence_unsignaled = true;
     mock.block_timeouts = 1;
     mock.poll_waits = mock.block_waits = 0;
