@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -75,6 +77,27 @@ int gsl_tl_query(struct gsl_device* dev, struct gsl_timeline_obj* tl, uint64_t* 
     *value = 0;
 
     return gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_QUERY, &req);
+}
+
+void gsl_tl_mark_available(struct gsl_timeline_obj* tl, uint64_t point) {
+    uint64_t cur = __atomic_load_n(&tl->available, __ATOMIC_RELAXED);
+
+    while (cur < point && !__atomic_compare_exchange_n(&tl->available, &cur, point, true,
+                                                       __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+    }
+}
+
+bool gsl_tl_available(const struct gsl_timeline_obj* tl, uint64_t point) {
+    return __atomic_load_n(&tl->available, __ATOMIC_ACQUIRE) >= point;
+}
+
+bool gsl_syncobj_points_available(const struct gsl_syncobj* obj) {
+    for (uint32_t i = 0; obj && i < obj->count; i++) {
+        if (obj->points[i].point && !gsl_tl_available(obj->points[i].tl, obj->points[i].point))
+            return false;
+    }
+
+    return true;
 }
 
 struct gsl_syncobj* gsl_syncobj_new(uint32_t count) {
@@ -180,18 +203,27 @@ int gsl_sync_deps_add_point(struct gsl_sync_deps* deps, uint32_t handle, uint64_
     return GSL_SUCCESS;
 }
 
+int gsl_sync_deps_add_points(struct gsl_sync_deps* deps, const struct gsl_syncobj* obj) {
+    for (uint32_t i = 0; obj && i < obj->count; i++) {
+        int ret;
+
+        if (!obj->points[i].point) continue;
+
+        ret = gsl_sync_deps_add_point(deps, obj->points[i].tl->handle, obj->points[i].point);
+        if (ret) return ret;
+    }
+
+    return GSL_SUCCESS;
+}
+
 int gsl_sync_deps_add(struct gsl_device* dev, struct gsl_sync_deps* deps,
                       const struct gsl_syncobj* obj) {
     int ret;
 
     if (!obj) return GSL_SUCCESS;
 
-    for (uint32_t i = 0; i < obj->count; i++) {
-        if (!obj->points[i].point) continue;
-
-        ret = gsl_sync_deps_add_point(deps, obj->points[i].tl->handle, obj->points[i].point);
-        if (ret) return ret;
-    }
+    ret = gsl_sync_deps_add_points(deps, obj);
+    if (ret) return ret;
 
     if (obj->fd >= 0) {
         uint32_t handle, *temps;
@@ -261,19 +293,38 @@ int gsl_sync_deps_wait(struct gsl_device* dev, const struct gsl_sync_deps* deps,
     return ret;
 }
 
+static int gsl_fd_wait(int fd, uint64_t deadline) {
+    struct pollfd pfd = {.fd = fd, .events = POLLIN};
+
+    for (;;) {
+        uint64_t now = gsl_abs_timeout_ns(0), left = deadline > now ? deadline - now : 0;
+        struct timespec timeout = {
+                .tv_sec = (time_t)(left / 1000000000),
+                .tv_nsec = (long)(left % 1000000000),
+        };
+        int ret = ppoll(&pfd, 1, deadline == INT64_MAX ? NULL : &timeout, NULL);
+
+        if (ret > 0) return pfd.revents & POLLNVAL ? GSL_FAILURE_BADPARAM : GSL_SUCCESS;
+        if (!ret) return GSL_FAILURE_TIMEOUT;
+        if (errno != EINTR && errno != EAGAIN) return gsl_errno_status(errno);
+    }
+}
+
 int gsl_syncobj_wait_internal(struct gsl_device* dev, struct gsl_syncobj* obj,
                               uint32_t timeout_ms) {
+    uint64_t deadline = gsl_abs_timeout_ns(timeout_ms);
     struct gsl_sync_deps deps = {0};
     int ret;
 
-    ret = gsl_sync_deps_add(dev, &deps, obj);
+    ret = gsl_sync_deps_add_points(&deps, obj);
     if (!ret)
         ret = gsl_sync_deps_wait(
                 dev, &deps,
-                DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL | DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT,
-                gsl_abs_timeout_ns(timeout_ms));
-
+                DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL | DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT, deadline);
     gsl_sync_deps_fini(dev, &deps);
+
+    if (!ret && obj->fd >= 0) ret = gsl_fd_wait(obj->fd, deadline);
+
     return ret;
 }
 

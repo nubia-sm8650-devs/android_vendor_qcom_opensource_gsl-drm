@@ -563,6 +563,15 @@ static int gsl_deps_wait_available(struct gsl_device* dev, const struct gsl_sync
             timeout_abs_ns);
 }
 
+static int gsl_submit_job_fence_fd(const struct gsl_submit_job* job) {
+    int wait_fd = job->wait ? job->wait->fd : -1;
+    int pending_fd = job->pending ? job->pending->fd : -1;
+
+    if (job->ops || (wait_fd >= 0 && pending_fd >= 0)) return -1;
+
+    return wait_fd >= 0 ? wait_fd : pending_fd;
+}
+
 static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
                               struct gsl_submit_job* job, uint64_t timeout_abs_ns) {
     struct gsl_bind_queue sparse = {
@@ -572,7 +581,8 @@ static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
             .lock = &ctx->sparse_lock,
     };
     struct gsl_sync_deps deps = {0};
-    uint64_t bind_point;
+    uint64_t bind_point, prior_point = job->ops ? job->prior_point : 0;
+    int fence_fd = gsl_submit_job_fence_fd(job);
     int ret = GSL_SUCCESS;
 
     pthread_mutex_lock(&dev->bind_lock);
@@ -580,13 +590,17 @@ static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
     pthread_mutex_unlock(&dev->bind_lock);
 
     if (bind_point) ret = gsl_sync_deps_add_point(&deps, dev->bind_syncobj, bind_point);
-    if (!ret) ret = gsl_sync_deps_add(dev, &deps, job->wait);
-    if (!ret) ret = gsl_sync_deps_add(dev, &deps, job->pending);
-    if (!ret && job->ops && job->prior_point)
-        ret = gsl_sync_deps_add_point(&deps, ctx->tl->handle, job->prior_point);
+    if (!ret && fence_fd >= 0) ret = gsl_sync_deps_add_points(&deps, job->wait);
+    if (!ret && fence_fd >= 0) ret = gsl_sync_deps_add_points(&deps, job->pending);
+    if (!ret && fence_fd < 0) ret = gsl_sync_deps_add(dev, &deps, job->wait);
+    if (!ret && fence_fd < 0) ret = gsl_sync_deps_add(dev, &deps, job->pending);
+    if (!ret && prior_point) ret = gsl_sync_deps_add_point(&deps, ctx->tl->handle, prior_point);
     if (!ret && job->bind_point)
         ret = gsl_sync_deps_add_point(&deps, sparse.syncobj, job->bind_point);
-    if (!ret) ret = gsl_deps_wait_available(dev, &deps, timeout_abs_ns);
+    if (!ret &&
+        !(gsl_syncobj_points_available(job->wait) && gsl_syncobj_points_available(job->pending) &&
+          (!prior_point || gsl_tl_available(ctx->tl, prior_point))))
+        ret = gsl_deps_wait_available(dev, &deps, timeout_abs_ns);
     if (ret) goto out;
 
     if (job->ops && !job->bind_point) {
@@ -598,7 +612,9 @@ static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
 
     struct drm_msm_gem_submit req = {
             .flags = MSM_PIPE_3D0 | MSM_SUBMIT_NO_IMPLICIT | MSM_SUBMIT_SYNCOBJ_OUT |
-                     (deps.count ? MSM_SUBMIT_SYNCOBJ_IN : 0),
+                     (deps.count ? MSM_SUBMIT_SYNCOBJ_IN : 0) |
+                     (fence_fd >= 0 ? MSM_SUBMIT_FENCE_FD_IN : 0),
+            .fence_fd = fence_fd >= 0 ? fence_fd : 0,
             .nr_cmds = job->ncmds,
             .cmds = (uintptr_t)job->cmds,
             .queueid = ctx->queue,
@@ -610,6 +626,10 @@ static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
     };
 
     ret = gsl_ioctl(dev, DRM_IOCTL_MSM_GEM_SUBMIT, &req);
+    if (!ret) {
+        for (uint32_t i = 0; i < job->nout; i++)
+            gsl_tl_mark_available(job->out_tls[i], job->out[i].point);
+    }
     if (ret == GSL_FAILURE_HANG) {
         __atomic_store_n(&dev->lost, true, __ATOMIC_RELAXED);
         ret = GSL_FAILURE_CTXT_DEADLOCK;
@@ -637,7 +657,10 @@ static void gsl_submit_job_signal(struct gsl_device* dev, const struct gsl_submi
                 .count_handles = job->nout,
         };
 
-        gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &req);
+        if (!gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &req)) {
+            for (uint32_t i = 0; i < job->nout; i++)
+                gsl_tl_mark_available(job->out_tls[i], job->out[i].point);
+        }
     }
 
     free(handles);

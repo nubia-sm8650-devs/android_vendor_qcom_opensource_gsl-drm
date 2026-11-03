@@ -194,7 +194,11 @@ static int gsl_tl_signal(struct gsl_device* dev, struct gsl_timeline_obj* tl, ui
             .count_handles = 1,
     };
 
-    return gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &req);
+    int ret = gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &req);
+
+    if (!ret) gsl_tl_mark_available(tl, value);
+
+    return ret;
 }
 
 int gsl_syncobj_signal(struct gsl_syncobj* obj) {

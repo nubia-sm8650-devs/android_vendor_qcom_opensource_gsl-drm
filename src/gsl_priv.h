@@ -61,6 +61,7 @@ struct gsl_timeline_obj {
     uint32_t gen;
     uint32_t handle;
     uint32_t deferred_index;
+    uint64_t available;
 };
 
 struct gsl_sync_point {
@@ -171,6 +172,9 @@ struct gsl_timeline_obj* gsl_tl_create(struct gsl_device* dev);
 struct gsl_timeline_obj* gsl_tl_get(struct gsl_timeline_obj* tl);
 void gsl_tl_put(struct gsl_device* dev, struct gsl_timeline_obj* tl);
 int gsl_tl_query(struct gsl_device* dev, struct gsl_timeline_obj* tl, uint64_t* value);
+void gsl_tl_mark_available(struct gsl_timeline_obj* tl, uint64_t point);
+bool gsl_tl_available(const struct gsl_timeline_obj* tl, uint64_t point);
+bool gsl_syncobj_points_available(const struct gsl_syncobj* obj);
 
 struct gsl_syncobj* gsl_syncobj_new(uint32_t count);
 struct gsl_syncobj* gsl_syncobj_get(struct gsl_syncobj* obj);
@@ -190,6 +194,7 @@ struct gsl_sync_deps {
 int gsl_sync_deps_add(struct gsl_device* dev, struct gsl_sync_deps* deps,
                       const struct gsl_syncobj* obj);
 int gsl_sync_deps_add_point(struct gsl_sync_deps* deps, uint32_t handle, uint64_t point);
+int gsl_sync_deps_add_points(struct gsl_sync_deps* deps, const struct gsl_syncobj* obj);
 void gsl_sync_deps_fini(struct gsl_device* dev, struct gsl_sync_deps* deps);
 int gsl_sync_deps_wait(struct gsl_device* dev, const struct gsl_sync_deps* deps, uint32_t flags,
                        uint64_t timeout_abs_ns);

@@ -55,6 +55,10 @@ int ioctl(int fd, unsigned long request, ...) {
     void* arg = va_arg(ap, void*);
     va_end(ap);
 
+    mock.ioctl_calls++;
+    if (request == DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT) mock.timeline_waits++;
+    if (request == DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE) mock.fd_imports++;
+
     if (request == DRM_IOCTL_SYNCOBJ_CREATE) {
         struct drm_syncobj_create* req = arg;
         if (req->flags & DRM_SYNCOBJ_CREATE_SIGNALED) mock.signaled_creates++;
@@ -96,6 +100,8 @@ int ioctl(int fd, unsigned long request, ...) {
         }
         mock.submit_nin = req->nr_in_syncobjs;
         mock.submit_nout = req->nr_out_syncobjs;
+        mock.submit_flags = req->flags;
+        mock.submit_fence_fd = req->fence_fd;
         assert(mock.submit_nin <= 16 && mock.submit_nout <= 16);
         if (mock.submit_nin)
             memcpy(mock.submit_in, (void*)(uintptr_t)req->in_syncobjs,

@@ -41,6 +41,11 @@ struct gsl_mock {
     unsigned int block_waits;
     unsigned int sleeps;
     void (*on_submit)(void);
+    unsigned int ioctl_calls;
+    unsigned int timeline_waits;
+    unsigned int fd_imports;
+    uint32_t submit_flags;
+    int submit_fence_fd;
 };
 
 extern struct gsl_mock mock;
