@@ -504,10 +504,7 @@ int gsl_memory_bind_sync(gsl_devhandle_t handle, gsl_ctxid_t id, const struct gs
         }
     }
 
-    ret = gsl_context_bind(dev, id, ops, nops, wait);
-    if (ret) goto out;
-
-    if (signal && signal->count) ret = gsl_context_marker(handle, id, ts, NULL, signal);
+    ret = gsl_context_bind(dev, id, ops, nops, wait, signal, ts);
 
 out:
     free(ops);

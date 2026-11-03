@@ -16,8 +16,15 @@ struct gsl_mock {
     unsigned int queries;
     unsigned int queried_handles;
     unsigned int bind_calls;
+    unsigned int submit_calls;
+    unsigned int submit_timeouts;
+    int bind_errno;
     uint32_t bind_nin;
     struct drm_msm_syncobj bind_in[16];
+    uint32_t submit_nin;
+    uint32_t submit_nout;
+    struct drm_msm_syncobj submit_in[16];
+    struct drm_msm_syncobj submit_out[16];
     uint64_t sync_flags[16];
     unsigned int sync_calls;
     uint64_t completed;

@@ -73,8 +73,29 @@ int ioctl(int fd, unsigned long request, ...) {
         mock.bind_calls++;
         mock.bind_nin = req->nr_in_syncobjs;
         assert(mock.bind_nin <= 16);
-        memcpy(mock.bind_in, (void*)(uintptr_t)req->in_syncobjs,
-               mock.bind_nin * sizeof(mock.bind_in[0]));
+        if (mock.bind_nin)
+            memcpy(mock.bind_in, (void*)(uintptr_t)req->in_syncobjs,
+                   mock.bind_nin * sizeof(mock.bind_in[0]));
+        if (mock.bind_errno) {
+            errno = mock.bind_errno;
+            return -1;
+        }
+    } else if (request == DRM_IOCTL_MSM_GEM_SUBMIT) {
+        struct drm_msm_gem_submit* req = arg;
+        mock.submit_calls++;
+        mock.submit_nin = req->nr_in_syncobjs;
+        mock.submit_nout = req->nr_out_syncobjs;
+        assert(mock.submit_nin <= 16 && mock.submit_nout <= 16);
+        if (mock.submit_nin)
+            memcpy(mock.submit_in, (void*)(uintptr_t)req->in_syncobjs,
+                   mock.submit_nin * sizeof(mock.submit_in[0]));
+        memcpy(mock.submit_out, (void*)(uintptr_t)req->out_syncobjs,
+               mock.submit_nout * sizeof(mock.submit_out[0]));
+        if (mock.submit_timeouts) {
+            mock.submit_timeouts--;
+            errno = EBUSY;
+            return -1;
+        }
     } else if (request == DRM_IOCTL_PRIME_FD_TO_HANDLE) {
         ((struct drm_prime_handle*)arg)->handle = 50;
     } else if (request == DMA_BUF_IOCTL_SYNC) {

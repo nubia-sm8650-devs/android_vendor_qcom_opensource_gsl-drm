@@ -10,9 +10,10 @@ uapi=${DRM_UAPI:-$android_root/bionic/libc/kernel/uapi/drm}
 mkdir "$build_dir/include"
 ln -s "$uapi" "$build_dir/include/drm"
 
-for test in "$repo"/tests/sync_fd.c "$repo"/tests/cache.c "$repo"/tests/deferred.c; do
+for test in "$repo"/tests/sync_fd.c "$repo"/tests/cache.c \
+            "$repo"/tests/deferred.c "$repo"/tests/sparse.c; do
     name=$(basename "$test" .c)
-    "$cc" -D_GNU_SOURCE -std=gnu11 -O2 -g -Wall -Wextra -Werror \
+    "$cc" ${TEST_CFLAGS:-} -D_GNU_SOURCE -std=gnu11 -O2 -g -Wall -Wextra -Werror \
         -Wno-unused-parameter -Wno-format-truncation \
         -I"$build_dir/include" -I"$repo/include" \
         -I"$repo/src" -pthread "$test" "$repo/tests/mock.c" \

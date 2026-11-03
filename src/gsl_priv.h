@@ -147,7 +147,7 @@ int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offs
              uint64_t range);
 int gsl_bind_unmap(struct gsl_device* dev, uint64_t iova, uint64_t range);
 int gsl_bind_ops(struct gsl_device* dev, const struct drm_msm_vm_bind_op* ops, uint32_t count,
-                 const struct drm_msm_syncobj* in, uint32_t nin);
+                 const struct drm_msm_syncobj* in, uint32_t nin, uint64_t* point);
 
 uint64_t gsl_abs_timeout_ns(uint32_t timeout_ms);
 
@@ -189,7 +189,8 @@ int gsl_context_marker(gsl_devhandle_t handle, gsl_ctxid_t id, uint32_t* ts,
                        struct gsl_syncobj* wait, const struct gsl_timeline_signal* signal);
 void gsl_context_put(struct gsl_context* ctx);
 int gsl_context_bind(struct gsl_device* dev, gsl_ctxid_t id, const struct drm_msm_vm_bind_op* ops,
-                     uint32_t count, struct gsl_syncobj* wait);
+                     uint32_t count, struct gsl_syncobj* wait,
+                     const struct gsl_timeline_signal* signal, uint32_t* ts);
 int gsl_context_snapshot(struct gsl_sync_point** points, uint32_t* count);
 void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo, const struct gsl_sync_point* after);
 void gsl_bo_destroy(struct gsl_device* dev, struct gsl_bo* bo);

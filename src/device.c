@@ -151,7 +151,7 @@ static int gsl_open_render_node(void) {
 }
 
 int gsl_bind_ops(struct gsl_device* dev, const struct drm_msm_vm_bind_op* ops, uint32_t count,
-                 const struct drm_msm_syncobj* in, uint32_t nin) {
+                 const struct drm_msm_syncobj* in, uint32_t nin, uint64_t* point) {
     struct drm_msm_syncobj out = {.handle = dev->bind_syncobj};
     struct drm_msm_vm_bind req = {
             .nr_ops = count,
@@ -175,7 +175,10 @@ int gsl_bind_ops(struct gsl_device* dev, const struct drm_msm_vm_bind_op* ops, u
     pthread_mutex_lock(&dev->bind_lock);
     out.point = dev->bind_point + 1;
     ret = gsl_ioctl(dev, DRM_IOCTL_MSM_VM_BIND, &req);
-    if (!ret) dev->bind_point = out.point;
+    if (!ret) {
+        dev->bind_point = out.point;
+        if (point) *point = out.point;
+    }
     pthread_mutex_unlock(&dev->bind_lock);
 
     if (ret == GSL_FAILURE_HANG) __atomic_store_n(&dev->lost, true, __ATOMIC_RELAXED);
@@ -196,7 +199,7 @@ int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offs
             .range = range,
     };
 
-    return gsl_bind_ops(dev, &bind, 1, NULL, 0);
+    return gsl_bind_ops(dev, &bind, 1, NULL, 0, NULL);
 }
 
 int gsl_bind_unmap(struct gsl_device* dev, uint64_t iova, uint64_t range) {

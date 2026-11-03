@@ -522,6 +522,8 @@ struct gsl_submit_job {
     uint32_t ts;
     struct drm_msm_vm_bind_op* ops;
     uint32_t nops;
+    uint64_t prior_point;
+    uint64_t bind_point;
     struct gsl_syncobj* wait;
     struct gsl_syncobj* pending;
     struct drm_msm_syncobj* out;
@@ -578,7 +580,7 @@ static int gsl_deps_wait_available(struct gsl_device* dev, const struct gsl_sync
 static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
                               struct gsl_submit_job* job, uint64_t timeout_abs_ns) {
     struct gsl_sync_deps deps = {0};
-    uint64_t bind_point = 0;
+    uint64_t bind_point = job->bind_point;
     int ret = GSL_SUCCESS;
 
     if (!job->ops) {
@@ -590,12 +592,15 @@ static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
     if (bind_point) ret = gsl_sync_deps_add_point(&deps, dev->bind_syncobj, bind_point);
     if (!ret) ret = gsl_sync_deps_add(dev, &deps, job->wait);
     if (!ret) ret = gsl_sync_deps_add(dev, &deps, job->pending);
+    if (!ret && job->ops && job->prior_point)
+        ret = gsl_sync_deps_add_point(&deps, ctx->tl->handle, job->prior_point);
     if (!ret) ret = gsl_deps_wait_available(dev, &deps, timeout_abs_ns);
     if (ret) goto out;
 
-    if (job->ops) {
-        ret = gsl_bind_ops(dev, job->ops, job->nops, deps.in, deps.count);
-        goto out;
+    if (job->ops && !job->bind_point) {
+        ret = gsl_bind_ops(dev, job->ops, job->nops, deps.in, deps.count, &job->bind_point);
+        if (!ret) ret = gsl_sync_deps_add_point(&deps, dev->bind_syncobj, job->bind_point);
+        if (ret) goto out;
     }
 
     struct drm_msm_gem_submit req = {
@@ -748,49 +753,10 @@ static int gsl_context_queue(struct gsl_device* dev, struct gsl_context* ctx,
     return ret;
 }
 
-int gsl_context_bind(struct gsl_device* dev, gsl_ctxid_t id, const struct drm_msm_vm_bind_op* ops,
-                     uint32_t count, struct gsl_syncobj* wait) {
-    struct gsl_submit_job* job;
-    struct gsl_context* ctx;
-    int ret;
-
-    if (!count) return GSL_SUCCESS;
-
-    ctx = gsl_context_get(id);
-    if (!ctx) {
-        struct gsl_sync_deps deps = {0};
-
-        ret = gsl_sync_deps_add(dev, &deps, wait);
-        if (!ret) ret = gsl_bind_ops(dev, ops, count, deps.in, deps.count);
-        gsl_sync_deps_fini(dev, &deps);
-
-        return ret;
-    }
-
-    job = calloc(1, sizeof(*job));
-    if (job) job->ops = malloc(count * sizeof(*ops));
-    if (!job || !job->ops) {
-        free(job);
-        gsl_context_put(ctx);
-        return GSL_FAILURE_OUTOFMEM;
-    }
-    memcpy(job->ops, ops, count * sizeof(*ops));
-    job->nops = count;
-    if (wait) job->wait = gsl_syncobj_get(wait);
-
-    pthread_mutex_lock(&ctx->lock);
-    ret = gsl_context_queue(dev, ctx, &job);
-    pthread_mutex_unlock(&ctx->lock);
-
-    if (job) gsl_submit_job_free(dev, job);
-    gsl_context_put(ctx);
-
-    return ret;
-}
-
 static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
                               struct drm_msm_gem_submit_cmd* cmds, uint32_t ncmds, uint32_t* ts,
-                              struct gsl_syncobj* wait, const struct gsl_timeline_signal* signal) {
+                              struct gsl_syncobj* wait, const struct gsl_timeline_signal* signal,
+                              const struct drm_msm_vm_bind_op* ops, uint32_t nops) {
     struct gsl_submit_job* job;
     uint32_t next, count;
     uint64_t point;
@@ -805,12 +771,15 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
     job->out = calloc(count, sizeof(*job->out));
     job->out_tls = calloc(count, sizeof(*job->out_tls));
     job->cmds = calloc(ncmds ? ncmds : 1, sizeof(*job->cmds));
-    if (!job->out || !job->out_tls || !job->cmds) {
+    if (nops) job->ops = calloc(nops, sizeof(*job->ops));
+    if (!job->out || !job->out_tls || !job->cmds || (nops && !job->ops)) {
         gsl_submit_job_free(dev, job);
         return GSL_FAILURE_OUTOFMEM;
     }
-    memcpy(job->cmds, cmds, ncmds * sizeof(*cmds));
+    if (ncmds) memcpy(job->cmds, cmds, ncmds * sizeof(*cmds));
     job->ncmds = ncmds;
+    if (nops) memcpy(job->ops, ops, nops * sizeof(*ops));
+    job->nops = nops;
     if (wait) job->wait = gsl_syncobj_get(wait);
 
     pthread_mutex_lock(&ctx->lock);
@@ -823,6 +792,7 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
         return ret;
     }
     job->ts = next;
+    job->prior_point = ctx->submitted ? ctx->last_point : 0;
     point = ctx->submitted ? gsl_context_point(ctx, next) : 1;
 
     job->out_tls[0] = gsl_tl_get(ctx->tl);
@@ -857,6 +827,20 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
     return ret;
 }
 
+int gsl_context_bind(struct gsl_device* dev, gsl_ctxid_t id, const struct drm_msm_vm_bind_op* ops,
+                     uint32_t count, struct gsl_syncobj* wait,
+                     const struct gsl_timeline_signal* signal, uint32_t* ts) {
+    struct gsl_context* ctx = gsl_context_get(id);
+    int ret;
+
+    if (!ctx) return GSL_FAILURE_BADPARAM;
+
+    ret = gsl_context_submit(dev, ctx, NULL, 0, ts, wait, signal, ops, count);
+    gsl_context_put(ctx);
+
+    return ret;
+}
+
 static int gsl_issue_cmdobjs(gsl_devhandle_t handle, gsl_ctxid_t id, const struct gsl_cmdobj* objs,
                              uint32_t count, uint32_t* ts, struct gsl_syncobj* wait,
                              const struct gsl_timeline_signal* signal) {
@@ -887,7 +871,7 @@ static int gsl_issue_cmdobjs(gsl_devhandle_t handle, gsl_ctxid_t id, const struc
         cmds[i].iova = objs[i].memdesc->gpuaddr + objs[i].offset;
     }
 
-    ret = gsl_context_submit(dev, ctx, cmds, count, ts, wait, signal);
+    ret = gsl_context_submit(dev, ctx, cmds, count, ts, wait, signal, NULL, 0);
 
     free(cmds);
     gsl_context_put(ctx);
