@@ -53,6 +53,20 @@ int main(void) {
            GSL_FAILURE_BADPARAM);
 
     assert(!gsl_memory_free_pure(&memdesc));
+
+    mock.sync_errno = 0;
+    mock.sync_calls = 0;
+    assert(!gsl_memory_map_ext_fd_pure(fd, 0, 4096, 0, 3, &memdesc, 0));
+    assert(!gsl_memory_cacheoperation(&memdesc, 0, 4096, GSL_CACHEFLAGS_FLUSH));
+    assert(gsl_memory_cacheoperation(&memdesc, 4096, 1, GSL_CACHEFLAGS_CLEAN) ==
+           GSL_FAILURE_BADPARAM);
+    assert(!mock.sync_calls);
+    assert(!gsl_memory_free_pure(&memdesc));
+
+    assert(!gsl_memory_map_ext_fd_pure(fd, 0, 4096, 0, 3, &memdesc, GSL_MEMFLAGS_WRITETHROUGH));
+    assert(!gsl_memory_cacheoperation(&memdesc, 0, 4096, GSL_CACHEFLAGS_CLEAN));
+    assert(mock.sync_calls == 1);
+    assert(!gsl_memory_free_pure(&memdesc));
     close(fd);
     test_fini();
     puts("cache tests passed");

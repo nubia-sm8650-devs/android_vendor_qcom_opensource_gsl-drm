@@ -633,9 +633,11 @@ int gsl_memory_cacheoperation(const struct gsl_memdesc* memdesc, uint64_t offset
 
     bo = memdesc->priv;
     if (bo->type == GSL_BO_IMPORT) {
+        uint64_t mode = memdesc->flags & GSL_MEMFLAGS_CACHEMODE_MASK;
         int ret;
 
         if (offset >= memdesc->size) return GSL_FAILURE_BADPARAM;
+        if (mode != GSL_MEMFLAGS_WRITEBACK && mode != GSL_MEMFLAGS_WRITETHROUGH) return GSL_SUCCESS;
         if (op & GSL_CACHEFLAGS_CLEAN) {
             ret = gsl_dmabuf_sync(bo->dmabuf_fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW);
             if (ret) return ret;
