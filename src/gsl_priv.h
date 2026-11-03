@@ -93,6 +93,11 @@ struct gsl_context {
     struct gsl_syncobj* pending_wait;
     struct gsl_context* next;
 
+    pthread_mutex_t sparse_lock;
+    uint32_t sparse_queue;
+    uint32_t sparse_syncobj;
+    uint64_t sparse_point;
+
     pthread_mutex_t qlock;
     pthread_cond_t qcond;
     struct gsl_submit_job* jobs;
@@ -147,6 +152,16 @@ void gsl_vma_free(struct gsl_vma* vma, uint64_t addr, uint64_t size);
 int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offset, uint64_t iova,
              uint64_t range);
 int gsl_bind_unmap(struct gsl_device* dev, uint64_t iova, uint64_t range);
+struct gsl_bind_queue {
+    uint32_t id;
+    uint32_t syncobj;
+    uint64_t* last;
+    pthread_mutex_t* lock;
+};
+
+int gsl_bind_ops_on(struct gsl_device* dev, const struct gsl_bind_queue* queue,
+                    const struct drm_msm_vm_bind_op* ops, uint32_t count,
+                    const struct drm_msm_syncobj* in, uint32_t nin, uint64_t* point);
 int gsl_bind_ops(struct gsl_device* dev, const struct drm_msm_vm_bind_op* ops, uint32_t count,
                  const struct drm_msm_syncobj* in, uint32_t nin, uint64_t* point);
 

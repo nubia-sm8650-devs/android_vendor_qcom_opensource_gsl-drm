@@ -77,6 +77,7 @@ int ioctl(int fd, unsigned long request, ...) {
         struct drm_msm_vm_bind* req = arg;
         mock.bind_calls++;
         mock.bind_nin = req->nr_in_syncobjs;
+        mock.bind_queue = req->queue_id;
         assert(mock.bind_nin <= 16);
         if (mock.bind_nin)
             memcpy(mock.bind_in, (void*)(uintptr_t)req->in_syncobjs,

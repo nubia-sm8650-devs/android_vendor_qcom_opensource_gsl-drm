@@ -117,6 +117,14 @@ void gsl_context_put(struct gsl_context* ctx) {
 
         gsl_ioctl(dev, DRM_IOCTL_MSM_SUBMITQUEUE_CLOSE, &id);
     }
+    if (dev && ctx->sparse_queue) {
+        struct drm_syncobj_destroy destroy = {.handle = ctx->sparse_syncobj};
+        uint32_t id = ctx->sparse_queue;
+
+        gsl_ioctl(dev, DRM_IOCTL_MSM_SUBMITQUEUE_CLOSE, &id);
+        gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_DESTROY, &destroy);
+    }
+    pthread_mutex_destroy(&ctx->sparse_lock);
     gsl_syncobj_put(ctx->pending_wait);
     gsl_tl_put(dev, ctx->tl);
     pthread_mutex_destroy(&ctx->state_lock);
@@ -370,6 +378,7 @@ static int gsl_context_new(struct gsl_device* dev, uint32_t type, uint32_t flags
     ctx->last_point = 0;
     pthread_mutex_init(&ctx->lock, NULL);
     pthread_mutex_init(&ctx->state_lock, NULL);
+    pthread_mutex_init(&ctx->sparse_lock, NULL);
     pthread_mutex_init(&ctx->qlock, NULL);
     pthread_cond_init(&ctx->qcond, NULL);
 
@@ -409,6 +418,7 @@ err:
     }
     pthread_cond_destroy(&ctx->qcond);
     pthread_mutex_destroy(&ctx->qlock);
+    pthread_mutex_destroy(&ctx->sparse_lock);
     pthread_mutex_destroy(&ctx->state_lock);
     pthread_mutex_destroy(&ctx->lock);
     free(ctx);
@@ -555,27 +565,34 @@ static int gsl_deps_wait_available(struct gsl_device* dev, const struct gsl_sync
 
 static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
                               struct gsl_submit_job* job, uint64_t timeout_abs_ns) {
+    struct gsl_bind_queue sparse = {
+            .id = ctx->sparse_queue,
+            .syncobj = ctx->sparse_syncobj,
+            .last = &ctx->sparse_point,
+            .lock = &ctx->sparse_lock,
+    };
     struct gsl_sync_deps deps = {0};
-    uint64_t bind_point = job->bind_point;
+    uint64_t bind_point;
     int ret = GSL_SUCCESS;
 
-    if (!job->ops) {
-        pthread_mutex_lock(&dev->bind_lock);
-        bind_point = dev->bind_point;
-        pthread_mutex_unlock(&dev->bind_lock);
-    }
+    pthread_mutex_lock(&dev->bind_lock);
+    bind_point = dev->bind_point;
+    pthread_mutex_unlock(&dev->bind_lock);
 
     if (bind_point) ret = gsl_sync_deps_add_point(&deps, dev->bind_syncobj, bind_point);
     if (!ret) ret = gsl_sync_deps_add(dev, &deps, job->wait);
     if (!ret) ret = gsl_sync_deps_add(dev, &deps, job->pending);
     if (!ret && job->ops && job->prior_point)
         ret = gsl_sync_deps_add_point(&deps, ctx->tl->handle, job->prior_point);
+    if (!ret && job->bind_point)
+        ret = gsl_sync_deps_add_point(&deps, sparse.syncobj, job->bind_point);
     if (!ret) ret = gsl_deps_wait_available(dev, &deps, timeout_abs_ns);
     if (ret) goto out;
 
     if (job->ops && !job->bind_point) {
-        ret = gsl_bind_ops(dev, job->ops, job->nops, deps.in, deps.count, &job->bind_point);
-        if (!ret) ret = gsl_sync_deps_add_point(&deps, dev->bind_syncobj, job->bind_point);
+        ret = gsl_bind_ops_on(dev, &sparse, job->ops, job->nops, deps.in, deps.count,
+                              &job->bind_point);
+        if (!ret) ret = gsl_sync_deps_add_point(&deps, sparse.syncobj, job->bind_point);
         if (ret) goto out;
     }
 
@@ -805,6 +822,32 @@ static int gsl_context_submit(struct gsl_device* dev, struct gsl_context* ctx,
     return ret;
 }
 
+static int gsl_context_sparse_init(struct gsl_device* dev, struct gsl_context* ctx) {
+    struct drm_msm_submitqueue queue = {.flags = MSM_SUBMITQUEUE_VM_BIND};
+    struct drm_syncobj_create syncobj = {0};
+    int ret = GSL_SUCCESS;
+
+    pthread_mutex_lock(&ctx->sparse_lock);
+    if (ctx->sparse_queue) goto out;
+
+    ret = gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_CREATE, &syncobj);
+    if (ret) goto out;
+
+    ret = gsl_ioctl(dev, DRM_IOCTL_MSM_SUBMITQUEUE_NEW, &queue);
+    if (ret) {
+        struct drm_syncobj_destroy destroy = {.handle = syncobj.handle};
+
+        gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_DESTROY, &destroy);
+        goto out;
+    }
+    ctx->sparse_syncobj = syncobj.handle;
+    ctx->sparse_queue = queue.id;
+
+out:
+    pthread_mutex_unlock(&ctx->sparse_lock);
+    return ret;
+}
+
 int gsl_context_bind(struct gsl_device* dev, gsl_ctxid_t id, const struct drm_msm_vm_bind_op* ops,
                      uint32_t count, struct gsl_syncobj* wait,
                      const struct gsl_timeline_signal* signal, uint32_t* ts) {
@@ -813,7 +856,8 @@ int gsl_context_bind(struct gsl_device* dev, gsl_ctxid_t id, const struct drm_ms
 
     if (!ctx) return GSL_FAILURE_BADPARAM;
 
-    ret = gsl_context_submit(dev, ctx, NULL, 0, ts, wait, signal, ops, count);
+    ret = gsl_context_sparse_init(dev, ctx);
+    if (!ret) ret = gsl_context_submit(dev, ctx, NULL, 0, ts, wait, signal, ops, count);
     gsl_context_put(ctx);
 
     return ret;

@@ -57,15 +57,17 @@ int main(void) {
     assert(!gsl_command_insertfence(1, id, &wait));
     assert(!gsl_memory_bind_sync(1, id, &bind, 1, &wait, NULL, &ts));
     assert(ts == 2 && mock.bind_calls == 1 && mock.bind_nin == 3);
+    assert(ctx->sparse_queue && mock.bind_queue == ctx->sparse_queue);
+    assert(ctx->sparse_queue != test_device.bind_queue && !test_device.bind_point);
     assert(contains(mock.bind_in, mock.bind_nin, ctx->tl->handle, 1));
     assert(contains(mock.bind_in, mock.bind_nin, tl->handle, 1));
     assert(mock.submit_nin == 4 && mock.submit_nout == 1);
-    assert(contains(mock.submit_in, mock.submit_nin, test_device.bind_syncobj, 1));
+    assert(contains(mock.submit_in, mock.submit_nin, ctx->sparse_syncobj, 1));
     assert(contains(mock.submit_out, mock.submit_nout, ctx->tl->handle, 2));
     assert(!ctx->pending_wait);
 
     assert(!gsl_context_marker(1, id, &ts, NULL, NULL) && ts == 3);
-    assert(contains(mock.submit_in, mock.submit_nin, test_device.bind_syncobj, 1));
+    assert(!contains(mock.submit_in, mock.submit_nin, ctx->sparse_syncobj, 1));
 
     uint64_t value = 9;
     struct gsl_timeline_signal signal = {.timelines = &tl, .values = &value, .count = 1};
@@ -91,8 +93,7 @@ int main(void) {
     assert(!gsl_memory_bind_sync(1, id, &bind, 1, NULL, NULL, &ts) && ts == 5);
     gsl_contexts_stop();
     assert(mock.bind_calls == binds + 1);
-    assert(contains(mock.submit_in, mock.submit_nin, test_device.bind_syncobj,
-                    test_device.bind_point));
+    assert(contains(mock.submit_in, mock.submit_nin, ctx->sparse_syncobj, ctx->sparse_point));
     assert(contains(mock.submit_out, mock.submit_nout, ctx->tl->handle, 5));
 
     gsl_context_put(ctx);
@@ -108,6 +109,19 @@ int main(void) {
     ts = 20;
     assert(!gsl_memory_bind_sync(1, id, &bind, 1, NULL, NULL, &ts));
     assert(ts == 20 && mock.bind_nin == 1 && mock.bind_in[0].point == 1);
+
+    gsl_ctxid_t other = gsl_context_create(1, 0, 0, NULL);
+    ctx = gsl_context_get(id);
+    test_device.bind_point = 5;
+    ts = 21;
+    assert(!gsl_memory_bind_sync(1, id, &bind, 1, NULL, NULL, &ts));
+    assert(contains(mock.bind_in, mock.bind_nin, test_device.bind_syncobj, 5));
+    assert(test_device.bind_point == 5);
+    assert(!gsl_context_marker(1, other, &ts, NULL, NULL));
+    assert(mock.submit_nin == 1);
+    assert(contains(mock.submit_in, mock.submit_nin, test_device.bind_syncobj, 5));
+    gsl_context_put(ctx);
+    assert(!gsl_context_destroy(1, other));
     assert(!gsl_context_destroy(1, id));
     test_fini();
     puts("sparse bind tests passed");

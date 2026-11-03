@@ -20,6 +20,7 @@ struct gsl_mock {
     unsigned int submit_timeouts;
     int bind_errno;
     uint32_t bind_nin;
+    uint32_t bind_queue;
     struct drm_msm_syncobj bind_in[16];
     uint32_t submit_nin;
     uint32_t submit_nout;

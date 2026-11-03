@@ -150,12 +150,13 @@ static int gsl_open_render_node(void) {
     return fd;
 }
 
-int gsl_bind_ops(struct gsl_device* dev, const struct drm_msm_vm_bind_op* ops, uint32_t count,
-                 const struct drm_msm_syncobj* in, uint32_t nin, uint64_t* point) {
-    struct drm_msm_syncobj out = {.handle = dev->bind_syncobj};
+int gsl_bind_ops_on(struct gsl_device* dev, const struct gsl_bind_queue* queue,
+                    const struct drm_msm_vm_bind_op* ops, uint32_t count,
+                    const struct drm_msm_syncobj* in, uint32_t nin, uint64_t* point) {
+    struct drm_msm_syncobj out = {.handle = queue->syncobj};
     struct drm_msm_vm_bind req = {
             .nr_ops = count,
-            .queue_id = dev->bind_queue,
+            .queue_id = queue->id,
             .in_syncobjs = (uintptr_t)in,
             .out_syncobjs = (uintptr_t)&out,
             .nr_in_syncobjs = nin,
@@ -172,14 +173,14 @@ int gsl_bind_ops(struct gsl_device* dev, const struct drm_msm_vm_bind_op* ops, u
     else
         req.ops = (uintptr_t)ops;
 
-    pthread_mutex_lock(&dev->bind_lock);
-    out.point = dev->bind_point + 1;
+    pthread_mutex_lock(queue->lock);
+    out.point = *queue->last + 1;
     ret = gsl_ioctl(dev, DRM_IOCTL_MSM_VM_BIND, &req);
     if (!ret) {
-        dev->bind_point = out.point;
+        *queue->last = out.point;
         if (point) *point = out.point;
     }
-    pthread_mutex_unlock(&dev->bind_lock);
+    pthread_mutex_unlock(queue->lock);
 
     if (ret == GSL_FAILURE_HANG) __atomic_store_n(&dev->lost, true, __ATOMIC_RELAXED);
     if (ret)
@@ -187,6 +188,18 @@ int gsl_bind_ops(struct gsl_device* dev, const struct drm_msm_vm_bind_op* ops, u
                 ret);
 
     return ret;
+}
+
+int gsl_bind_ops(struct gsl_device* dev, const struct drm_msm_vm_bind_op* ops, uint32_t count,
+                 const struct drm_msm_syncobj* in, uint32_t nin, uint64_t* point) {
+    struct gsl_bind_queue queue = {
+            .id = dev->bind_queue,
+            .syncobj = dev->bind_syncobj,
+            .last = &dev->bind_point,
+            .lock = &dev->bind_lock,
+    };
+
+    return gsl_bind_ops_on(dev, &queue, ops, count, in, nin, point);
 }
 
 int gsl_bind(struct gsl_device* dev, uint32_t op, uint32_t handle, uint64_t offset, uint64_t iova,
