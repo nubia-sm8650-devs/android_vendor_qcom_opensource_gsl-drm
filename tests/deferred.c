@@ -15,6 +15,8 @@ int gsl_context_destroy(gsl_devhandle_t handle, gsl_ctxid_t id);
 
 int main(void) {
     test_init();
+    mock.fake_clock = true;
+    mock.now_ns = 10000000000ull;
     gsl_ctxid_t id = gsl_context_create(1, 0, 0, NULL);
     gsl_ctxid_t other = gsl_context_create(1, 0, 0, NULL);
     uint32_t ts = 0;
@@ -35,18 +37,23 @@ int main(void) {
         gsl_bo_release(&test_device, bo, NULL);
     }
 
-    assert(mock.queries == 127 && mock.queried_handles == 254);
+    assert(mock.queries == 1 && mock.queried_handles == 2);
     assert(!mock.bind_calls);
 
     mock.completed = ts;
+    gsl_reap_deferred(&test_device);
+    assert(mock.queries == 1 && !mock.bind_calls);
+
+    mock.now_ns += 1000000;
     mock.query_errno = EIO;
     gsl_reap_deferred(&test_device);
-    assert(!mock.bind_calls);
+    assert(mock.queries == 2 && !mock.bind_calls);
     mock.query_errno = 0;
+    mock.now_ns += 1000000;
     gsl_reap_deferred(&test_device);
-    assert(mock.bind_calls == 64);
+    assert(mock.queries == 3 && mock.bind_calls == 64);
     gsl_reap_deferred(&test_device);
-    assert(mock.bind_calls == 128);
+    assert(mock.queries == 3 && mock.bind_calls == 128);
     unsigned int queries = mock.queries;
     gsl_reap_deferred(&test_device);
     assert(mock.queries == queries);

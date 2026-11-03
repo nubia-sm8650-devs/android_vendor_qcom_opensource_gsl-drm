@@ -26,6 +26,7 @@
 #define GSL_WORKER_DRAIN_MS 5000
 #define GSL_DESTROY_WAIT_MS 20000
 #define GSL_REAP_BATCH_SIZE 64
+#define GSL_REAP_QUERY_INTERVAL_NS 1000000ull
 
 struct gsl_ibdesc {
     uint64_t gpuaddr;
@@ -55,6 +56,7 @@ static uint32_t gsl_next_ctx_id;
 static pthread_mutex_t gsl_defer_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct gsl_deferred* gsl_deferred;
 static struct gsl_deferred* gsl_deferred_tail;
+static uint64_t gsl_deferred_queried_ns;
 
 int gsl_timestamp_cmp(uint32_t a, uint32_t b) {
     if (a == b) return 0;
@@ -254,6 +256,7 @@ void gsl_reap_deferred(struct gsl_device* dev) {
     uint64_t* values = NULL;
     uint32_t count = 0, ntls = 0;
     size_t max_points = 0;
+    uint64_t now;
 
     pthread_mutex_lock(&gsl_defer_lock);
     for (node = gsl_deferred; node && count < GSL_REAP_BATCH_SIZE; node = node->next) {
@@ -261,6 +264,9 @@ void gsl_reap_deferred(struct gsl_device* dev) {
         if (!gsl_bo_retired(node->bo)) max_points += node->bo->nretire;
     }
     if (!count) goto unlock;
+
+    now = gsl_abs_timeout_ns(0);
+    if (max_points && now - gsl_deferred_queried_ns < GSL_REAP_QUERY_INTERVAL_NS) max_points = 0;
 
     if (max_points) {
         tls = calloc(max_points, sizeof(*tls));
@@ -292,6 +298,7 @@ void gsl_reap_deferred(struct gsl_device* dev) {
         if (!gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_QUERY, &req)) {
             for (uint32_t i = 0; i < ntls; i++) gsl_tl_mark_signaled(tls[i], values[i]);
         }
+        gsl_deferred_queried_ns = now;
         for (uint32_t i = 0; i < ntls; i++) tls[i]->deferred_index = 0;
     }
 
@@ -333,6 +340,7 @@ void gsl_deferred_reset(void) {
     node = gsl_deferred;
     gsl_deferred = NULL;
     gsl_deferred_tail = NULL;
+    gsl_deferred_queried_ns = 0;
     pthread_mutex_unlock(&gsl_defer_lock);
 
     while (node) {

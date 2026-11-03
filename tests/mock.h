@@ -46,6 +46,8 @@ struct gsl_mock {
     unsigned int fd_imports;
     uint32_t submit_flags;
     int submit_fence_fd;
+    bool fake_clock;
+    uint64_t now_ns;
 };
 
 extern struct gsl_mock mock;

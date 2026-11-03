@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <drm/drm.h>
@@ -29,6 +30,15 @@ int os_alog(int level, const char* tag, const char* file, int line, const char* 
 
 void* get_panel_settings(void) {
     return NULL;
+}
+
+int clock_gettime(clockid_t clock, struct timespec* ts) {
+    if (mock.fake_clock && clock == CLOCK_MONOTONIC) {
+        ts->tv_sec = (time_t)(mock.now_ns / 1000000000);
+        ts->tv_nsec = (long)(mock.now_ns % 1000000000);
+        return 0;
+    }
+    return (int)syscall(SYS_clock_gettime, clock, ts);
 }
 
 int usleep(useconds_t usec) {
