@@ -60,6 +60,7 @@ struct gsl_timeline_obj {
     int refs;
     uint32_t gen;
     uint32_t handle;
+    uint32_t deferred_index;
 };
 
 struct gsl_sync_point {

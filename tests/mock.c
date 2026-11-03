@@ -61,6 +61,10 @@ int ioctl(int fd, unsigned long request, ...) {
         uint64_t* points = (void*)(uintptr_t)req->points;
         mock.queries++;
         mock.queried_handles += req->count_handles;
+        if (mock.query_errno) {
+            errno = mock.query_errno;
+            return -1;
+        }
         for (uint32_t i = 0; i < req->count_handles; i++) points[i] = mock.completed;
     } else if (request == DRM_IOCTL_MSM_GET_PARAM) {
         ((struct drm_msm_param*)arg)->value = 4;

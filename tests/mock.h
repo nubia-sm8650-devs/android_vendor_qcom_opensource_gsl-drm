@@ -10,6 +10,7 @@
 struct gsl_mock {
     bool fail_dup;
     int sync_errno;
+    int query_errno;
     unsigned int sync_interrupts;
     unsigned int signaled_creates;
     unsigned int queries;

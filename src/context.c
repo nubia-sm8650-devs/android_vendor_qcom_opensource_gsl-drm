@@ -25,6 +25,7 @@
 #define GSL_WORKER_POLL_MS 100
 #define GSL_WORKER_DRAIN_MS 5000
 #define GSL_DESTROY_WAIT_MS 20000
+#define GSL_REAP_BATCH_SIZE 64
 
 struct gsl_ibdesc {
     uint64_t gpuaddr;
@@ -53,6 +54,7 @@ static uint32_t gsl_next_ctx_id;
 
 static pthread_mutex_t gsl_defer_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct gsl_deferred* gsl_deferred;
+static struct gsl_deferred* gsl_deferred_tail;
 
 int gsl_timestamp_cmp(uint32_t a, uint32_t b) {
     if (a == b) return 0;
@@ -218,33 +220,90 @@ void gsl_bo_release(struct gsl_device* dev, struct gsl_bo* bo, const struct gsl_
     }
 
     node->bo = bo;
+    node->next = NULL;
     pthread_mutex_lock(&gsl_defer_lock);
-    node->next = gsl_deferred;
-    gsl_deferred = node;
+    if (gsl_deferred_tail)
+        gsl_deferred_tail->next = node;
+    else
+        gsl_deferred = node;
+    gsl_deferred_tail = node;
     pthread_mutex_unlock(&gsl_defer_lock);
 }
 
 void gsl_reap_deferred(struct gsl_device* dev) {
-    struct gsl_deferred **link, *node, *done = NULL;
+    struct gsl_deferred *batch[GSL_REAP_BATCH_SIZE], *node, *done = NULL;
+    struct gsl_timeline_obj** tls = NULL;
+    uint32_t* handles = NULL;
+    uint64_t* values = NULL;
+    uint32_t count = 0, ntls = 0;
+    size_t max_points = 0;
 
     pthread_mutex_lock(&gsl_defer_lock);
-    link = &gsl_deferred;
-    while ((node = *link)) {
-        bool signaled = false;
+    for (node = gsl_deferred; node && count < GSL_REAP_BATCH_SIZE; node = node->next) {
+        batch[count++] = node;
+        max_points += node->bo->nretire;
+    }
+    if (!count) goto unlock;
 
-        if (gsl_sync_points_signaled(dev, node->bo->retire, node->bo->nretire, &signaled))
-            signaled = false;
+    tls = calloc(max_points, sizeof(*tls));
+    handles = calloc(max_points, sizeof(*handles));
+    values = calloc(max_points, sizeof(*values));
+    if (!tls || !handles || !values) goto unlock;
 
-        if (!signaled) {
-            link = &node->next;
-            continue;
+    for (uint32_t i = 0; i < count; i++) {
+        struct gsl_bo* bo = batch[i]->bo;
+
+        for (uint32_t j = 0; j < bo->nretire; j++) {
+            struct gsl_timeline_obj* tl = bo->retire[j].tl;
+
+            if (tl->deferred_index) continue;
+            tls[ntls] = tl;
+            handles[ntls] = tl->handle;
+            tl->deferred_index = ++ntls;
+        }
+    }
+
+    struct drm_syncobj_timeline_array req = {
+            .handles = (uintptr_t)handles,
+            .points = (uintptr_t)values,
+            .count_handles = ntls,
+    };
+    if (gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_QUERY, &req)) goto reset;
+
+    gsl_deferred = batch[count - 1]->next;
+    if (!gsl_deferred) gsl_deferred_tail = NULL;
+    for (uint32_t i = 0; i < count; i++) {
+        struct gsl_bo* bo = batch[i]->bo;
+        bool signaled = true;
+
+        for (uint32_t j = 0; j < bo->nretire; j++) {
+            if (values[bo->retire[j].tl->deferred_index - 1] < bo->retire[j].point) {
+                signaled = false;
+                break;
+            }
         }
 
-        *link = node->next;
-        node->next = done;
-        done = node;
+        node = batch[i];
+        if (signaled) {
+            node->next = done;
+            done = node;
+        } else {
+            node->next = NULL;
+            if (gsl_deferred_tail)
+                gsl_deferred_tail->next = node;
+            else
+                gsl_deferred = node;
+            gsl_deferred_tail = node;
+        }
     }
+
+reset:
+    for (uint32_t i = 0; i < ntls; i++) tls[i]->deferred_index = 0;
+unlock:
     pthread_mutex_unlock(&gsl_defer_lock);
+    free(tls);
+    free(handles);
+    free(values);
 
     while ((node = done)) {
         done = node->next;
@@ -260,6 +319,7 @@ void gsl_deferred_reset(void) {
     pthread_mutex_lock(&gsl_defer_lock);
     node = gsl_deferred;
     gsl_deferred = NULL;
+    gsl_deferred_tail = NULL;
     pthread_mutex_unlock(&gsl_defer_lock);
 
     while (node) {
