@@ -5,8 +5,10 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/dma-buf.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -435,6 +437,11 @@ int gsl_memory_map_ext_fd_pure(int fd, uint64_t hostptr, uint64_t len, uint64_t 
     bo->handle = handle;
     bo->refs = 1;
     bo->dmabuf_fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+    if (bo->dmabuf_fd < 0) {
+        pthread_mutex_unlock(&gsl_import_lock);
+        gsl_bo_destroy(dev, bo);
+        return GSL_FAILURE_SYSTEMERROR;
+    }
 
     end = lseek(fd, 0, SEEK_END);
     bo->size = end > 0 ? (uint64_t)end : gsl_page_align(len);
@@ -606,6 +613,17 @@ static void gsl_cache_maintain(void* addr, uint64_t size, uint32_t op) {
     __asm__ volatile("dsb sy" ::: "memory");
 }
 
+static int gsl_dmabuf_sync(int fd, uint64_t flags) {
+    struct dma_buf_sync sync = {.flags = flags};
+    int ret;
+
+    do {
+        ret = ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+    } while (ret < 0 && (errno == EINTR || errno == EAGAIN));
+
+    return ret < 0 ? gsl_errno_status(errno) : GSL_SUCCESS;
+}
+
 int gsl_memory_cacheoperation(const struct gsl_memdesc* memdesc, uint64_t offset, uint64_t size,
                               uint32_t op) {
     struct gsl_bo* bo;
@@ -614,6 +632,19 @@ int gsl_memory_cacheoperation(const struct gsl_memdesc* memdesc, uint64_t offset
     if (!(op & GSL_CACHEFLAGS_FLUSH)) return GSL_FAILURE_BADPARAM;
 
     bo = memdesc->priv;
+    if (bo->type == GSL_BO_IMPORT) {
+        int ret;
+
+        if (offset >= memdesc->size) return GSL_FAILURE_BADPARAM;
+        if (op & GSL_CACHEFLAGS_CLEAN) {
+            ret = gsl_dmabuf_sync(bo->dmabuf_fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW);
+            if (ret) return ret;
+        }
+        if (op & GSL_CACHEFLAGS_INVALIDATE)
+            return gsl_dmabuf_sync(bo->dmabuf_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_RW);
+
+        return GSL_SUCCESS;
+    }
     if (!(bo->msm_flags & MSM_BO_CACHED) || !memdesc->hostptr) return GSL_SUCCESS;
 
     if (offset >= memdesc->size) return GSL_FAILURE_BADPARAM;
