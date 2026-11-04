@@ -1106,6 +1106,13 @@ int gsl_command_waittimestamp(gsl_devhandle_t handle, gsl_ctxid_t id, uint32_t t
     return ret;
 }
 
+static int gsl_sync_point_compare(const void* a, const void* b) {
+    const struct gsl_sync_point *x = a, *y = b;
+    uintptr_t tx = (uintptr_t)x->tl, ty = (uintptr_t)y->tl;
+
+    return (tx > ty) - (tx < ty);
+}
+
 int gsl_syncobj_merge_into(struct gsl_syncobj** dst, struct gsl_syncobj* src) {
     struct gsl_syncobj* merged;
     uint32_t n = 0;
@@ -1114,6 +1121,8 @@ int gsl_syncobj_merge_into(struct gsl_syncobj** dst, struct gsl_syncobj* src) {
         *dst = gsl_syncobj_get(src);
         return GSL_SUCCESS;
     }
+
+    if (src->count > UINT32_MAX - (*dst)->count) return GSL_FAILURE_OUTOFMEM;
 
     merged = gsl_syncobj_new((*dst)->count + src->count);
     if (!merged) return GSL_FAILURE_OUTOFMEM;
@@ -1126,6 +1135,23 @@ int gsl_syncobj_merge_into(struct gsl_syncobj** dst, struct gsl_syncobj* src) {
         merged->points[n].tl = gsl_tl_get(src->points[i].tl);
         merged->points[n].point = src->points[i].point;
     }
+
+    if (merged->count > 1)
+        qsort(merged->points, merged->count, sizeof(*merged->points), gsl_sync_point_compare);
+
+    n = 0;
+    for (uint32_t i = 0; i < merged->count; i++) {
+        struct gsl_sync_point point = merged->points[i];
+
+        if (n && merged->points[n - 1].tl == point.tl) {
+            if (point.point > merged->points[n - 1].point)
+                merged->points[n - 1].point = point.point;
+            gsl_tl_put(NULL, point.tl);
+        } else {
+            merged->points[n++] = point;
+        }
+    }
+    merged->count = n;
 
     if ((*dst)->fd >= 0 || src->fd >= 0) {
         merged->fd = gsl_fd_merge((*dst)->fd, src->fd);

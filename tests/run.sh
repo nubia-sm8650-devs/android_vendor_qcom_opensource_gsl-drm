@@ -14,7 +14,7 @@ for test in "$repo"/tests/sync_fd.c "$repo"/tests/cache.c \
             "$repo"/tests/deferred.c "$repo"/tests/sparse.c \
             "$repo"/tests/wait.c "$repo"/tests/lock.c \
             "$repo"/tests/submit.c "$repo"/tests/timestamp.c \
-            "$repo"/tests/dependencies.c; do
+            "$repo"/tests/dependencies.c "$repo"/tests/merge.c; do
     name=$(basename "$test" .c)
     "$cc" ${TEST_CFLAGS:-} -D_GNU_SOURCE -std=gnu11 -O2 -g -Wall -Wextra -Werror \
         -Wno-unused-parameter -Wno-format-truncation \

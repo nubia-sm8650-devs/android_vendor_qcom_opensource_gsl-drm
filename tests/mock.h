@@ -54,6 +54,9 @@ struct gsl_mock {
     unsigned int fail_allocation;
     unsigned int syncobj_destroys;
     int fd_import_errno;
+    unsigned int fd_merges;
+    int fd_merge_errno;
+    int (*check_wait)(const struct drm_syncobj_timeline_wait* req);
     void (*check_submit)(const struct drm_msm_gem_submit* req);
 };
 

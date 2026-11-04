@@ -15,6 +15,7 @@
 
 #include <drm/drm.h>
 #include <linux/dma-buf.h>
+#include <linux/sync_file.h>
 
 #include "mock.h"
 
@@ -68,6 +69,13 @@ int ioctl(int fd, unsigned long request, ...) {
     mock.ioctl_calls++;
     if (request == DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT) mock.timeline_waits++;
     if (request == DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE) mock.fd_imports++;
+
+    if (request == DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT && mock.check_wait) {
+        int err = mock.check_wait(arg);
+
+        if (err) errno = err;
+        return err ? -1 : 0;
+    }
 
     if (request == DRM_IOCTL_SYNCOBJ_CREATE) {
         struct drm_syncobj_create* req = arg;
@@ -175,6 +183,16 @@ int ioctl(int fd, unsigned long request, ...) {
             return -1;
         }
         mock.point_pending = false;
+    } else if (request == SYNC_IOC_MERGE) {
+        struct sync_merge_data* req = arg;
+
+        mock.fd_merges++;
+        if (mock.fd_merge_errno) {
+            errno = mock.fd_merge_errno;
+            return -1;
+        }
+        req->fence = dup(fd);
+        if (req->fence < 0) return -1;
     } else if (request == DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD) {
         ((struct drm_syncobj_handle*)arg)->fd = dup(fd);
     }
