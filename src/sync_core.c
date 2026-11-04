@@ -210,15 +210,29 @@ static int gsl_import_sync_file(struct gsl_device* dev, int fd, uint32_t* handle
     return GSL_SUCCESS;
 }
 
+int gsl_sync_deps_init(struct gsl_sync_deps* deps, uint64_t count, uint64_t ntemps) {
+    if (count > UINT32_MAX || count > SIZE_MAX / sizeof(*deps->in) || ntemps > UINT32_MAX ||
+        ntemps > SIZE_MAX / sizeof(*deps->temps))
+        return GSL_FAILURE_OUTOFMEM;
+
+    if (count) deps->in = calloc(count, sizeof(*deps->in));
+    if (ntemps) deps->temps = calloc(ntemps, sizeof(*deps->temps));
+    if ((count && !deps->in) || (ntemps && !deps->temps)) {
+        free(deps->in);
+        free(deps->temps);
+        memset(deps, 0, sizeof(*deps));
+        return GSL_FAILURE_OUTOFMEM;
+    }
+    deps->capacity = count;
+    deps->temp_capacity = ntemps;
+
+    return GSL_SUCCESS;
+}
+
 int gsl_sync_deps_add_point(struct gsl_sync_deps* deps, uint32_t handle, uint64_t point) {
-    struct drm_msm_syncobj* in = realloc(deps->in, (deps->count + 1) * sizeof(*in));
+    if (deps->count == deps->capacity) return GSL_FAILURE_OUTOFMEM;
 
-    if (!in) return GSL_FAILURE_OUTOFMEM;
-
-    in[deps->count].handle = handle;
-    in[deps->count].flags = 0;
-    in[deps->count].point = point;
-    deps->in = in;
+    deps->in[deps->count] = (struct drm_msm_syncobj){.handle = handle, .point = point};
     deps->count++;
 
     return GSL_SUCCESS;
@@ -247,20 +261,14 @@ int gsl_sync_deps_add(struct gsl_device* dev, struct gsl_sync_deps* deps,
     if (ret) return ret;
 
     if (obj->fd >= 0) {
-        uint32_t handle, *temps;
+        uint32_t handle;
+
+        if (deps->ntemps == deps->temp_capacity) return GSL_FAILURE_OUTOFMEM;
 
         ret = gsl_import_sync_file(dev, obj->fd, &handle);
         if (ret) return ret;
 
-        temps = realloc(deps->temps, (deps->ntemps + 1) * sizeof(*temps));
-        if (!temps) {
-            struct drm_syncobj_destroy destroy = {.handle = handle};
-
-            gsl_ioctl(dev, DRM_IOCTL_SYNCOBJ_DESTROY, &destroy);
-            return GSL_FAILURE_OUTOFMEM;
-        }
-        temps[deps->ntemps++] = handle;
-        deps->temps = temps;
+        deps->temps[deps->ntemps++] = handle;
 
         ret = gsl_sync_deps_add_point(deps, handle, 0);
         if (ret) return ret;
@@ -335,7 +343,15 @@ int gsl_syncobj_wait_internal(struct gsl_device* dev, struct gsl_syncobj* obj,
                               uint32_t timeout_ms) {
     uint64_t deadline = gsl_abs_timeout_ns(timeout_ms);
     struct gsl_sync_deps deps = {0};
-    int ret = GSL_SUCCESS;
+    uint32_t count = 0;
+    int ret;
+
+    for (uint32_t i = 0; i < obj->count; i++) {
+        const struct gsl_sync_point* point = &obj->points[i];
+
+        if (point->point && !gsl_tl_signaled(point->tl, point->point)) count++;
+    }
+    ret = gsl_sync_deps_init(&deps, count, 0);
 
     for (uint32_t i = 0; i < obj->count && !ret; i++) {
         const struct gsl_sync_point* point = &obj->points[i];

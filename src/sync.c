@@ -85,6 +85,7 @@ int gsl_syncobj_wait_multiple(struct gsl_syncobj** objs, int* results, uint64_t 
 
     for (;;) {
         struct gsl_sync_deps deps = {0};
+        uint64_t pending = 0, ntemps = 0;
         int ret = GSL_FAILURE_TIMEOUT, err = GSL_SUCCESS;
 
         for (uint64_t i = 0; i < count; i++) {
@@ -98,6 +99,12 @@ int gsl_syncobj_wait_multiple(struct gsl_syncobj** objs, int* results, uint64_t 
         if (ret != GSL_FAILURE_TIMEOUT || !timeout_ms || gsl_abs_timeout_ns(0) >= deadline)
             return ret;
 
+        for (uint64_t i = 0; i < count; i++) {
+            if (results[i] != GSL_FAILURE_TIMEOUT) continue;
+            pending++;
+            if (objs[i]->fd >= 0) ntemps++;
+        }
+        err = gsl_sync_deps_init(&deps, pending, ntemps);
         for (uint64_t i = 0; i < count && !err; i++) {
             if (results[i] == GSL_FAILURE_TIMEOUT)
                 err = gsl_syncobj_add_pending(dev, objs[i], &deps);

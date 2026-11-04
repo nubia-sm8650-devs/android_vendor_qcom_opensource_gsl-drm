@@ -190,10 +190,13 @@ int gsl_syncobj_wait_internal(struct gsl_device* dev, struct gsl_syncobj* obj, u
 struct gsl_sync_deps {
     struct drm_msm_syncobj* in;
     uint32_t count;
+    uint32_t capacity;
     uint32_t* temps;
     uint32_t ntemps;
+    uint32_t temp_capacity;
 };
 
+int gsl_sync_deps_init(struct gsl_sync_deps* deps, uint64_t count, uint64_t ntemps);
 int gsl_sync_deps_add(struct gsl_device* dev, struct gsl_sync_deps* deps,
                       const struct gsl_syncobj* obj);
 int gsl_sync_deps_add_point(struct gsl_sync_deps* deps, uint32_t handle, uint64_t point);

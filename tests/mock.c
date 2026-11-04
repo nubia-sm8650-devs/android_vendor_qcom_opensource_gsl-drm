@@ -73,6 +73,11 @@ int ioctl(int fd, unsigned long request, ...) {
         struct drm_syncobj_create* req = arg;
         if (req->flags & DRM_SYNCOBJ_CREATE_SIGNALED) mock.signaled_creates++;
         req->handle = next_handle++;
+    } else if (request == DRM_IOCTL_SYNCOBJ_DESTROY) {
+        mock.syncobj_destroys++;
+    } else if (request == DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE && mock.fd_import_errno) {
+        errno = mock.fd_import_errno;
+        return -1;
     } else if (request == DRM_IOCTL_MSM_SUBMITQUEUE_NEW) {
         ((struct drm_msm_submitqueue*)arg)->id = next_handle++;
     } else if (request == DRM_IOCTL_SYNCOBJ_QUERY) {
@@ -112,12 +117,13 @@ int ioctl(int fd, unsigned long request, ...) {
         mock.submit_nout = req->nr_out_syncobjs;
         mock.submit_flags = req->flags;
         mock.submit_fence_fd = req->fence_fd;
-        assert(mock.submit_nin <= 16 && mock.submit_nout <= 16);
+        assert(mock.submit_nout <= 16);
         if (mock.submit_nin)
             memcpy(mock.submit_in, (void*)(uintptr_t)req->in_syncobjs,
-                   mock.submit_nin * sizeof(mock.submit_in[0]));
+                   (mock.submit_nin < 16 ? mock.submit_nin : 16) * sizeof(mock.submit_in[0]));
         memcpy(mock.submit_out, (void*)(uintptr_t)req->out_syncobjs,
                mock.submit_nout * sizeof(mock.submit_out[0]));
+        if (mock.check_submit) mock.check_submit(req);
         if (mock.submit_timeouts) {
             mock.submit_timeouts--;
             errno = EBUSY;

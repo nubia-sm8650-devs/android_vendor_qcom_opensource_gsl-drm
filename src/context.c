@@ -594,14 +594,26 @@ static int gsl_submit_job_run(struct gsl_device* dev, struct gsl_context* ctx,
     };
     struct gsl_sync_deps deps = {0};
     uint64_t bind_point, prior_point = job->ops ? job->prior_point : 0;
+    uint64_t count = 0;
+    uint32_t ntemps = 0;
     int fence_fd = gsl_submit_job_fence_fd(job);
-    int ret = GSL_SUCCESS;
+    int ret;
 
     pthread_mutex_lock(&dev->bind_lock);
     bind_point = dev->bind_point;
     pthread_mutex_unlock(&dev->bind_lock);
 
-    if (bind_point) ret = gsl_sync_deps_add_point(&deps, dev->bind_syncobj, bind_point);
+    if (job->wait) {
+        count += job->wait->count;
+        if (fence_fd < 0 && job->wait->fd >= 0) ntemps++;
+    }
+    if (job->pending) {
+        count += job->pending->count;
+        if (fence_fd < 0 && job->pending->fd >= 0) ntemps++;
+    }
+    count += ntemps + !!bind_point + !!prior_point + !!(job->ops || job->bind_point);
+    ret = gsl_sync_deps_init(&deps, count, ntemps);
+    if (!ret && bind_point) ret = gsl_sync_deps_add_point(&deps, dev->bind_syncobj, bind_point);
     if (!ret && fence_fd >= 0) ret = gsl_sync_deps_add_points(&deps, job->wait);
     if (!ret && fence_fd >= 0) ret = gsl_sync_deps_add_points(&deps, job->pending);
     if (!ret && fence_fd < 0) ret = gsl_sync_deps_add(dev, &deps, job->wait);

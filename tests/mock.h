@@ -48,6 +48,13 @@ struct gsl_mock {
     int submit_fence_fd;
     bool fake_clock;
     uint64_t now_ns;
+    bool track_allocations;
+    unsigned int allocations;
+    unsigned int reallocations;
+    unsigned int fail_allocation;
+    unsigned int syncobj_destroys;
+    int fd_import_errno;
+    void (*check_submit)(const struct drm_msm_gem_submit* req);
 };
 
 extern struct gsl_mock mock;
